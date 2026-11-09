@@ -49,8 +49,9 @@ check "ученик не может скрыть объявление" "$(req s 
 check "удаление своего объявления" "$(req s DELETE /api/listings/$LID | code)" 200
 
 echo "3. Бронирование и защита от двойной записи"
-SLOT=$(req s GET "/api/teachers/$TEACHER_ID/slots?duration=60" | body | jq -r '.slots[3].startsAt')
-[ "$SLOT" != "null" ] && ok "есть свободные слоты" || bad "нет слотов"
+# Начало с нестандартными минутами: +7 мин от начала первого свободного интервала, где это помещается
+SLOT=$(req s GET "/api/teachers/$TEACHER_ID/slots?duration=60" | body | jq -r '[.intervals[] | select((.lastStartAt|fromdate) - (.startsAt|fromdate) >= 420)][0].startsAt | fromdate + 420 | todate')
+[ -n "$SLOT" ] && [ "$SLOT" != "null" ] && ok "есть свободное время (начало $SLOT)" || bad "нет свободных интервалов"
 BODY="{\"teacherId\":\"$TEACHER_ID\",\"startsAt\":\"$SLOT\",\"duration\":60,\"subject\":\"Математика\"}"
 # Одновременно отправляем 8 запросов от двух учеников на один и тот же слот
 for i in 1 2 3 4 5 6 7 8; do j=s; [ $((i % 2)) = 0 ] && j=o

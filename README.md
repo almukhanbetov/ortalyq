@@ -138,6 +138,7 @@ set -a; source .env; set +a
 cd e2e && npm ci && BASE=https://localhost:8443 node lesson-flow.mjs   # 19 шагов в двух браузерах
 BASE=https://localhost:8443 node classroom-entry.mjs                    # вход из кабинетов, доска и чат (NOVIDEO=1 — без LiveKit)
 BASE=https://localhost:8443 node code-editor.mjs                        # вкладка «Код»: синхронизация, запуск, права, телефон
+BASE=https://localhost:8443 node booking-time.mjs                       # запись на любое время ЧЧ:ММ: интервалы, причины отказа, пояса
 ```
 
 `code-editor.mjs`: `RUNNER=none` — бэкенд без исполнителя (проверяется «Сервис выполнения не настроен»), `RUNNER=stub` или реальный Judge0 — проверяются запуски.

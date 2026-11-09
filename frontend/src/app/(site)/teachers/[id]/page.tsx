@@ -5,7 +5,8 @@ import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError, errorMessage, Teacher } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { dayKey, formatDateTime, formatDayLabel, formatPrice, formatTime, plural, tzLabel } from "@/lib/format";
+import { checkStart, rangesByDay, type Busy, type FreeInterval } from "@/lib/booking";
+import { formatDateTime, formatDayLabel, formatPrice, hmIn, plural, tzLabel } from "@/lib/format";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, Empty, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
 
 interface Review {
@@ -13,10 +14,6 @@ interface Review {
   body: string;
   createdAt: string;
   studentName: string;
-}
-interface Slot {
-  startsAt: string;
-  endsAt: string;
 }
 
 export default function TeacherPage({ params }: { params: Promise<{ id: string }> }) {
@@ -40,7 +37,7 @@ export default function TeacherPage({ params }: { params: Promise<{ id: string }
   return (
     <div>
       <BackLink href="/teachers" label="Все преподаватели" />
-      <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-6">
           <div className="card p-6">
             <div className="flex flex-col gap-5 sm:flex-row">
@@ -109,57 +106,75 @@ export default function TeacherPage({ params }: { params: Promise<{ id: string }
   );
 }
 
+/** Маска ввода ЧЧ:ММ (24 ч): только цифры и двоеточие; время не изменяется, только форматируется. */
+function maskHm(raw: string): string {
+  if (raw.includes(":")) {
+    const [h, m = ""] = raw.split(":");
+    return `${h.replace(/\D/g, "").slice(0, 2)}:${m.replace(/\D/g, "").slice(0, 2)}`;
+  }
+  const d = raw.replace(/\D/g, "").slice(0, 4);
+  return d.length <= 2 ? d : `${d.slice(0, 2)}:${d.slice(2)}`;
+}
+
 function BookingPanel({ teacher }: { teacher: Teacher }) {
   const { user, tz } = useAuth();
   const router = useRouter();
   const [duration, setDuration] = useState(60);
   const [subject, setSubject] = useState(teacher.subjects[0] ?? "");
   const [note, setNote] = useState("");
-  const [slots, setSlots] = useState<Slot[] | null>(null);
+  const [data, setData] = useState<{ intervals: FreeInterval[]; myLessons: Busy[] } | null>(null);
   const [error, setError] = useState("");
   const [day, setDay] = useState("");
-  const [picked, setPicked] = useState<Slot | null>(null);
+  const [time, setTime] = useState("");
+  const [serverReason, setServerReason] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(() => {
-    setSlots(null);
+    setData(null);
     setError("");
-    api<{ slots: Slot[] }>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
-      .then((r) => setSlots(r.slots))
+    api<{ intervals: FreeInterval[]; myLessons: Busy[] }>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
+      .then((r) => setData({ intervals: r.intervals ?? [], myLessons: r.myLessons ?? [] }))
       .catch((e) => {
         setError(errorMessage(e));
-        setSlots([]);
+        setData({ intervals: [], myLessons: [] });
       });
   }, [teacher.id, duration]);
   useEffect(load, [load]);
-
-  const byDay = useMemo(() => {
-    const m = new Map<string, Slot[]>();
-    for (const s of slots ?? []) {
-      const k = dayKey(s.startsAt, tz);
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(s);
-    }
-    return m;
-  }, [slots, tz]);
-
+  // Текущее время для проверки «в прошлом» (раз в 30 с)
   useEffect(() => {
-    if (!day || !byDay.has(day)) setDay(byDay.keys().next().value ?? "");
-  }, [byDay, day]);
+    const t = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const byDay = useMemo(() => rangesByDay(data?.intervals ?? [], tz), [data, tz]);
+  useEffect(() => {
+    // Выбранный день сохраняется, пока в нём есть свободное время; время начала не трогаем.
+    if (data && (!day || !byDay.has(day))) setDay(byDay.keys().next().value ?? "");
+  }, [byDay, day, data]);
+
+  const check = useMemo(
+    // Проверяем только полностью введённое время (Ч:ММ или ЧЧ:ММ), без ошибок на середине ввода.
+    () => (/^\d{1,2}:\d\d$/.test(time) ? checkStart(day, time.padStart(5, "0"), duration, tz, data?.intervals ?? [], data?.myLessons ?? [], now) : null),
+    [day, time, duration, tz, data, now],
+  );
+  useEffect(() => setServerReason(""), [day, time, duration]);
 
   const book = async () => {
-    if (!picked) return;
+    if (!check?.ok) return;
     setBusy(true);
     try {
       const r = await api<{ id: string }>("/api/lessons", {
         method: "POST",
-        json: { teacherId: teacher.id, startsAt: picked.startsAt, duration, subject, note },
+        json: { teacherId: teacher.id, startsAt: check.start.toISOString(), duration, subject, note },
       });
       toast("Вы записаны на занятие");
       router.push(`/lessons/${r.id}`);
     } catch (e) {
-      toast(errorMessage(e), "err");
-      setPicked(null);
+      // Причину показываем у поля; выбранное время не меняем.
+      setServerReason(errorMessage(e));
+      setConfirmOpen(false);
       if (e instanceof ApiError && e.status === 409) load();
     } finally {
       setBusy(false);
@@ -167,11 +182,20 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   };
 
   const canBook = user?.role === "student";
+  const ranges = byDay.get(day) ?? [];
+  const reason = serverReason || (check && !check.ok ? check.reason : "");
 
   return (
-    <aside className="card h-fit p-6 lg:sticky lg:top-24" id="book">
+    <aside className="card h-fit min-w-0 p-6 lg:sticky lg:top-24" id="book">
       <h2 className="text-lg font-semibold">Записаться на занятие</h2>
-      <p className="mt-1 text-xs text-muted">Время показано в часовом поясе {tzLabel(tz)}</p>
+      <p className="mt-1 text-xs text-muted" data-testid="booking-tz">
+        Часовой пояс: <b>{tzLabel(tz)}</b>. Всё время в форме — в нём.{" "}
+        {user && (
+          <Link href="/profile" className="underline">
+            Изменить
+          </Link>
+        )}
+      </p>
 
       {!user && (
         <Notice tone="info">
@@ -214,38 +238,89 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
 
       <div className="mt-5">
         {error && <ErrorBox message={error} onRetry={load} />}
-        {slots === null ? (
+        {data === null ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted">
             <Spinner className="h-4 w-4" /> Загружаем свободное время…
           </div>
         ) : byDay.size === 0 ? (
-          <Empty icon="🗓️" title="Нет свободного времени" text="Преподаватель пока не открыл интервалы на ближайшие 3 недели." />
+          <Empty icon="🗓️" title="Нет свободного времени" text={`Нет свободных интервалов для урока ${duration} мин на ближайшие 3 недели.`} />
         ) : (
           <>
-            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-2">
+            <div className="label">Дата</div>
+            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-2" role="listbox" aria-label="Дата занятия">
               {[...byDay.keys()].map((k) => (
                 <button
                   key={k}
+                  role="option"
+                  aria-selected={day === k}
+                  data-day={k}
                   onClick={() => setDay(k)}
                   className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-medium ${
                     day === k ? "border-brand-500 bg-brand-600 text-white" : "border-line bg-white hover:border-brand-300"
                   }`}
                 >
-                  {formatDayLabel(byDay.get(k)![0].startsAt, tz)}
+                  {formatDayLabel(byDay.get(k)![0].from.toISOString(), tz)}
                 </button>
               ))}
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-3">
-              {(byDay.get(day) ?? []).map((s) => (
-                <button
-                  key={s.startsAt}
+
+            <div className="mt-3 rounded-xl bg-canvas p-3 text-sm" data-testid="free-intervals">
+              <div className="mb-1 text-xs font-semibold text-muted">Свободно в этот день (урок {duration} мин):</div>
+              <ul className="space-y-1">
+                {ranges.map((r) => (
+                  <li key={r.from.toISOString()}>
+                    <button
+                      type="button"
+                      className="text-left hover:underline disabled:no-underline"
+                      disabled={!canBook}
+                      onClick={() => setTime(hmIn(r.from, tz))}
+                      title="Подставить самое раннее начало"
+                    >
+                      <b>
+                        {hmIn(r.interval.startsAt, tz)}–{hmIn(r.interval.endsAt, tz)}
+                      </b>{" "}
+                      <span className="text-muted">
+                        · начало с {hmIn(r.from, tz)} до {hmIn(r.to, tz)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-3">
+              <label className="label" htmlFor="start-time">
+                Время начала (ЧЧ:ММ)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="start-time"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="ЧЧ:ММ"
+                  maxLength={5}
+                  className="input w-28 font-mono tabular-nums"
+                  value={time}
                   disabled={!canBook}
-                  onClick={() => setPicked(s)}
-                  className="rounded-xl border border-line bg-white px-2 py-2.5 text-sm font-medium transition hover:border-brand-400 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {formatTime(s.startsAt, tz)}
-                </button>
-              ))}
+                  onChange={(e) => setTime(maskHm(e.target.value))}
+                  onBlur={() => setTime((v) => (/^\d:\d\d$/.test(v) ? `0${v}` : v))}
+                  aria-describedby="start-hint"
+                  aria-invalid={!!reason}
+                />
+                <span className="text-xs text-muted">{tzLabel(tz)}</span>
+              </div>
+              <div id="start-hint" className="mt-1 min-h-5 text-sm" aria-live="polite" data-testid="start-status">
+                {reason ? (
+                  <span className="text-red-700">{reason}</span>
+                ) : check?.ok ? (
+                  <span className="text-emerald-700">
+                    {formatDayLabel(check.start.toISOString(), tz)}, {hmIn(check.start, tz)}–{hmIn(check.end, tz)} — время свободно
+                  </span>
+                ) : (
+                  <span className="text-muted">Любая минута внутри свободного интервала, например 10:05 или 10:42.</span>
+                )}
+              </div>
             </div>
           </>
         )}
@@ -255,24 +330,27 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         <div className="mt-4">
           <label className="label" htmlFor="note">Комментарий для преподавателя</label>
           <textarea id="note" className="input min-h-20" maxLength={1000} placeholder="Например: готовлюсь к ЕНТ, сложно с тригонометрией" value={note} onChange={(e) => setNote(e.target.value)} />
+          <button className="btn-primary mt-3 w-full" disabled={!check?.ok || !!serverReason} onClick={() => setConfirmOpen(true)} data-testid="book-open">
+            Записаться
+          </button>
         </div>
       )}
 
       <ConfirmModal
-        open={!!picked}
+        open={confirmOpen && !!check?.ok}
         title="Подтвердите запись"
         busy={busy}
         confirmLabel="Записаться"
-        onClose={() => setPicked(null)}
+        onClose={() => setConfirmOpen(false)}
         onConfirm={book}
         text={
-          picked && (
+          check?.ok && (
             <div className="space-y-2">
               <p>
                 <b>{teacher.name}</b> · {subject}
               </p>
               <p>
-                {formatDateTime(picked.startsAt, tz)} – {formatTime(picked.endsAt, tz)} ({duration} мин)
+                {formatDateTime(check.start.toISOString(), tz)} – {hmIn(check.end, tz)} ({duration} мин), {tzLabel(tz)}
               </p>
               <p className="text-muted">Стоимость: {formatPrice(Math.round((teacher.price * duration) / 60))}. Оплата в этой версии не подключена.</p>
             </div>

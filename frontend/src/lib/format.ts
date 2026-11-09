@@ -80,6 +80,23 @@ export function zonedToUtc(date: string, time: string, tz: string): Date {
   return new Date(guess);
 }
 
+/** Дата YYYY-MM-DD момента t в часовом поясе tz. */
+export function isoDayIn(t: Date | string, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(t));
+}
+
+/** Время HH:mm (24 ч) момента t в часовом поясе tz. */
+export function hmIn(t: Date | string, tz: string): string {
+  const p = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hourCycle: "h23", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(t));
+  return `${p.find((x) => x.type === "hour")?.value}:${p.find((x) => x.type === "minute")?.value}`;
+}
+
+/** YYYY-MM-DD + n календарных дней. */
+export function addDaysIso(day: string, n: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
 /** Сегодняшняя дата YYYY-MM-DD в часовом поясе пользователя. */
 export function todayIn(tz: string, addDays = 0): string {
   const d = new Date(Date.now() + addDays * 86400000);

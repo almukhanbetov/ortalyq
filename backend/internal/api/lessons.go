@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -112,10 +113,23 @@ func (s *Server) bookLesson(c *gin.Context) {
 		fail(c, 400, "Недопустимая длительность")
 		return
 	}
+	// Начало — любая минута (сетки 30 минут нет); время не сдвигается, недопустимое отклоняется с причиной.
 	start := req.StartsAt.UTC()
 	end := start.Add(time.Duration(req.Duration) * time.Minute)
-	if start.Before(time.Now().Add(2 * time.Minute)) {
-		fail(c, 400, "Нельзя записаться на прошедшее время")
+	loc := userLocation(u.Timezone)
+	now := time.Now()
+	switch {
+	case req.StartsAt.IsZero():
+		fail(c, 400, "Укажите дату и время начала")
+		return
+	case start.Second() != 0 || start.Nanosecond() != 0:
+		fail(c, 400, "Время начала указывается с точностью до минуты (ЧЧ:ММ)")
+		return
+	case !start.After(now):
+		fail(c, 400, fmt.Sprintf("Время начала уже прошло (сейчас %s, %s). Выберите время в будущем.", hm(now, loc), loc.String()))
+		return
+	case start.After(now.Add(90 * 24 * time.Hour)):
+		fail(c, 400, "Записаться можно не более чем на 90 дней вперёд")
 		return
 	}
 	if utf8.RuneCountInString(req.Note) > 1000 {
@@ -148,14 +162,34 @@ func (s *Server) bookLesson(c *gin.Context) {
 		}
 		subject = subjects[0]
 	}
-	var inWindow bool
-	if err := s.db.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM availability WHERE teacher_id=$1 AND starts_at <= $2 AND ends_at >= $3)`,
-		req.TeacherID, start, end).Scan(&inWindow); err != nil {
+	// Весь урок должен входить в доступность (соседние окна объединяются).
+	avail, err := s.spans(c, `SELECT starts_at, ends_at FROM availability WHERE teacher_id=$1 AND ends_at >= $2 AND starts_at <= $3`, req.TeacherID, start, end)
+	if err != nil {
 		internal(c, err)
 		return
 	}
-	if !inWindow {
-		fail(c, 409, "Преподаватель недоступен в это время")
+	if msg := availabilityProblem(avail, start, end, loc); msg != "" {
+		fail(c, 409, msg)
+		return
+	}
+	// Понятная причина пересечения. Окончательную защиту (в т.ч. от одновременных запросов) даёт EXCLUDE в БД ниже.
+	var bs, be time.Time
+	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled'
+		AND tstzrange(starts_at, ends_at) && tstzrange($2, $3) ORDER BY starts_at LIMIT 1`, req.TeacherID, start, end).Scan(&bs, &be)
+	if err == nil {
+		fail(c, 409, fmt.Sprintf("Это время пересекается с другим занятием преподавателя (%s–%s). Выберите другое время.", hm(bs, loc), hm(be, loc)))
+		return
+	} else if !db.IsNoRows(err) {
+		internal(c, err)
+		return
+	}
+	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled'
+		AND tstzrange(starts_at, ends_at) && tstzrange($2, $3) ORDER BY starts_at LIMIT 1`, u.ID, start, end).Scan(&bs, &be)
+	if err == nil {
+		fail(c, 409, fmt.Sprintf("У вас уже есть занятие %s %s–%s, которое пересекается с выбранным временем.", dm(bs, loc), hm(bs, loc), hm(be, loc)))
+		return
+	} else if !db.IsNoRows(err) {
+		internal(c, err)
 		return
 	}
 	total := price * req.Duration / 60
@@ -169,7 +203,7 @@ func (s *Server) bookLesson(c *gin.Context) {
 			if constraint == "lessons_student_no_overlap" {
 				fail(c, 409, "У вас уже есть занятие в это время")
 			} else {
-				fail(c, 409, "Это время уже занято. Выберите другой слот")
+				fail(c, 409, "Это время только что занял другой ученик. Выберите другое время.")
 			}
 			return
 		}

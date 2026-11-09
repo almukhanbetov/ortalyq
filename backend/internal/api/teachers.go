@@ -190,6 +190,10 @@ func firstName(n string) string {
 }
 
 // teacherSlots возвращает свободные времена начала занятия внутри окон доступности.
+// teacherSlots — свободные интервалы преподавателя на 3 недели для урока выбранной длительности.
+// Любая минута в [startsAt, lastStartAt] интервала — допустимое начало (сетки нет).
+// Для вошедшего ученика дополнительно возвращаются его действующие занятия (myLessons),
+// чтобы форма заранее предупреждала о пересечении.
 func (s *Server) teacherSlots(c *gin.Context) {
 	id := c.Param("id")
 	if !isUUID(id) {
@@ -203,55 +207,50 @@ func (s *Server) teacherSlots(c *gin.Context) {
 	}
 	now := time.Now().UTC()
 	horizon := now.Add(21 * 24 * time.Hour)
-	type win struct{ from, to time.Time }
-	var windows, busy []win
-	rows, err := s.db.Query(c, `SELECT starts_at, ends_at FROM availability WHERE teacher_id=$1 AND ends_at > $2 AND starts_at < $3 ORDER BY starts_at`, id, now, horizon)
+	avail, err := s.spans(c, `SELECT starts_at, ends_at FROM availability WHERE teacher_id=$1 AND ends_at > $2 AND starts_at < $3`, id, now, horizon)
 	if err != nil {
 		internal(c, err)
 		return
 	}
-	for rows.Next() {
-		var w win
-		rows.Scan(&w.from, &w.to)
-		windows = append(windows, w)
-	}
-	rows.Close()
-	rows, err = s.db.Query(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled' AND ends_at > $2`, id, now)
+	busy, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled' AND ends_at > $2 AND starts_at < $3`, id, now, horizon.Add(24*time.Hour))
 	if err != nil {
 		internal(c, err)
 		return
 	}
-	for rows.Next() {
-		var w win
-		rows.Scan(&w.from, &w.to)
-		busy = append(busy, w)
-	}
-	rows.Close()
-
-	step := 30 * time.Minute
-	d := time.Duration(dur) * time.Minute
-	minStart := now.Add(5 * time.Minute)
-	slots := []gin.H{}
-	for _, w := range windows {
-		start := w.from.UTC()
-		for ; !start.Add(d).After(w.to); start = start.Add(step) {
-			if start.Before(minStart) {
-				continue
-			}
-			end := start.Add(d)
-			free := true
-			for _, b := range busy {
-				if start.Before(b.to) && b.from.Before(end) {
-					free = false
-					break
-				}
-			}
-			if free {
-				slots = append(slots, gin.H{"startsAt": start, "endsAt": end})
-			}
+	mine := []gin.H{}
+	if u := currentUser(c); u != nil && u.Role == "student" {
+		own, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled' AND ends_at > $2 AND starts_at < $3`, u.ID, now, horizon.Add(24*time.Hour))
+		if err != nil {
+			internal(c, err)
+			return
+		}
+		for _, x := range own {
+			mine = append(mine, gin.H{"startsAt": x.From, "endsAt": x.To})
 		}
 	}
-	c.JSON(200, gin.H{"slots": slots, "duration": dur})
+	c.JSON(200, gin.H{
+		"duration":      dur,
+		"intervals":     freeIntervals(avail, busy, now, time.Duration(dur)*time.Minute),
+		"myLessons":     mine,
+		"earliestStart": earliestStart(now),
+	})
+}
+
+func (s *Server) spans(c *gin.Context, q string, args ...any) ([]span, error) {
+	rows, err := s.db.Query(c, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []span{}
+	for rows.Next() {
+		var x span
+		if err := rows.Scan(&x.From, &x.To); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
 }
 
 func validDuration(d int) bool { return d == 30 || d == 45 || d == 60 || d == 90 }

@@ -1,0 +1,48 @@
+# Секреты и локальное окружение (.env.example — коммитится)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Зависимости и сборка
+node_modules/
+.next/
+out/
+backend/bin/
+*.tsbuildinfo
+# Шрифты Excalidraw копируются из node_modules при сборке (scripts/copy-excalidraw-assets.mjs)
+frontend/public/fonts/
+
+# Логи и отчёты тестов
+*.log
+logs/
+frontend/test-results/
+frontend/playwright-report/
+e2e/screenshots/
+e2e/test-results/
+
+# Дампы БД, записи уроков, загрузки, локальные данные Docker и сертификаты Caddy
+*.sql.gz
+*.dump
+*.backup
+dump*.sql
+backup*.sql
+*.mp4
+*.webm
+uploads/
+recordings/
+data/
+pgdata/
+s3data/
+caddydata/
+caddy_data/
+
+# Редакторы и ОС
+.DS_Store
+.idea/
+.vscode/

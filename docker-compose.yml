@@ -1,0 +1,149 @@
+# ORTALYQ — локальная/демонстрационная инфраструктура.
+#
+# LiveKit и Egress работают в сети хоста (network_mode: host) — так WebRTC-медиа и
+# headless Chrome записи работают без NAT-проблем. Поддерживается Linux; на macOS/Windows
+# используйте LiveKit Cloud (см. README).
+#
+#   docker compose up -d --build      # всё, включая API, фронтенд и HTTPS-прокси
+#   docker compose up -d postgres rustfs redis livekit egress   # только инфраструктура (режим разработки)
+
+name: ortalyq
+
+x-livekit-config: &livekit-config |
+  port: 7880
+  bind_addresses: ["0.0.0.0"]
+  rtc:
+    tcp_port: 7881
+    udp_port: 7882
+    use_external_ip: false
+  redis:
+    address: 127.0.0.1:16379
+  keys:
+    ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}
+  webhook:
+    api_key: ${LIVEKIT_API_KEY}
+    urls:
+      - http://127.0.0.1:18080/api/livekit/webhook
+  room:
+    empty_timeout: 300
+    departure_timeout: 60
+  logging:
+    level: info
+
+x-egress-config: &egress-config |
+  api_key: ${LIVEKIT_API_KEY}
+  api_secret: ${LIVEKIT_API_SECRET}
+  ws_url: ws://127.0.0.1:7880
+  insecure: true
+  health_port: 9091
+  log_level: info
+  redis:
+    address: 127.0.0.1:16379
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ortalyq
+      POSTGRES_USER: ortalyq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ortalyq -d ortalyq"]
+      interval: 3s
+      retries: 20
+
+  # S3-совместимое хранилище (закрытый бакет). Можно заменить на любой S3 через переменные S3_*.
+  rustfs:
+    image: rustfs/rustfs:1.0.3
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_VOLUMES: /data
+    # Порт открыт только на loopback: он нужен сервису Egress (сеть хоста) для загрузки записи.
+    ports: ["127.0.0.1:19000:9000"]
+    volumes: [s3data:/data]
+
+  redis:
+    image: redis:8.6.8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["127.0.0.1:16379:6379"]
+
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    network_mode: host
+    environment:
+      LIVEKIT_CONFIG: *livekit-config
+    command: ["--node-ip", "${LIVEKIT_NODE_IP:-127.0.0.1}"]
+    depends_on: [redis]
+    restart: unless-stopped
+
+  # Запись занятий: headless Chrome открывает шаблон /recorder/... (доска + экран + видео + звук)
+  # и загружает MP4 прямо в S3.
+  egress:
+    image: livekit/egress:v1.15.0
+    network_mode: host
+    cap_add: [SYS_ADMIN]
+    environment:
+      EGRESS_CONFIG_BODY: *egress-config
+    depends_on: [redis, livekit]
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://ortalyq:${POSTGRES_PASSWORD}@postgres:5432/ortalyq?sslmode=disable
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-https://localhost:8443,http://localhost:13000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      LIVEKIT_URL: http://host.docker.internal:7880
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      RECORDING_ENABLED: ${RECORDING_ENABLED:-true}
+      RECORDING_TEMPLATE_BASE_URL: http://127.0.0.1:13000
+      S3_ENDPOINT: rustfs:9000
+      EGRESS_S3_ENDPOINT: http://127.0.0.1:19000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:-ortalyq-private}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-20}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    # 127.0.0.1:18080 — для вебхуков LiveKit (сеть хоста)
+    ports: ["127.0.0.1:18080:18080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rustfs: { condition: service_started }
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_INTERNAL_URL: http://backend:18080
+    # 127.0.0.1:13000 — шаблон записи для Egress
+    ports: ["127.0.0.1:13000:3000"]
+    depends_on: [backend]
+    restart: unless-stopped
+
+  # Единая HTTPS-точка входа (нужна для камеры/микрофона на телефоне в локальной сети).
+  caddy:
+    image: caddy:2.11.9-alpine
+    environment:
+      SITE_ADDRESSES: ${SITE_ADDRESSES:-https://localhost:8443}
+    ports: ["8443:8443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [frontend, backend]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  s3data:
+  caddydata:

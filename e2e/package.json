@@ -1,0 +1,11 @@
+{
+  "name": "ortalyq-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node lesson-flow.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.55.0"
+  }
+}

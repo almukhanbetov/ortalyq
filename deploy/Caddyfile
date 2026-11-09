@@ -1,0 +1,27 @@
+# HTTPS с собственным (внутренним) сертификатом Caddy.
+# На телефоне браузер покажет предупреждение о сертификате — для локальной демонстрации его можно принять
+# (или установить корневой сертификат Caddy из тома caddydata: /data/caddy/pki/authorities/local/root.crt).
+{
+	auto_https disable_redirects
+	local_certs
+	skip_install_trust
+}
+
+{$SITE_ADDRESSES} {
+	tls internal
+	encode gzip
+
+	# API и WebSocket занятий
+	handle /api/* {
+		reverse_proxy backend:18080
+	}
+
+	# Сигнальный канал LiveKit (медиа идёт напрямую по UDP 7882 / TCP 7881)
+	handle /rtc* {
+		reverse_proxy host.docker.internal:7880
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

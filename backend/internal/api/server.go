@@ -1,0 +1,273 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ortalyq/backend/internal/auth"
+	"ortalyq/backend/internal/config"
+	"ortalyq/backend/internal/lk"
+	"ortalyq/backend/internal/realtime"
+	"ortalyq/backend/internal/storage"
+)
+
+type Server struct {
+	cfg    *config.Config
+	db     *pgxpool.Pool
+	store  *storage.Store // nil, если хранилище не настроено
+	lk     *lk.Client     // nil, если LiveKit не настроен
+	signer *auth.Signer
+	hub    *realtime.Hub
+}
+
+func New(cfg *config.Config, db *pgxpool.Pool, store *storage.Store, lkc *lk.Client) *Server {
+	s := &Server{cfg: cfg, db: db, store: store, lk: lkc, signer: auth.NewSigner(cfg.AppSecret)}
+	s.hub = realtime.NewHub(db)
+	return s
+}
+
+func (s *Server) Hub() *realtime.Hub { return s.hub }
+
+const sessionCookie = "ortalyq_session"
+
+type ctxUser struct {
+	ID       string
+	Role     string
+	Name     string
+	Email    string
+	Timezone string
+}
+
+func (s *Server) Router() *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery(), requestLogger(), securityHeaders())
+	r.MaxMultipartMemory = 8 << 20
+
+	r.GET("/api/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+
+	a := r.Group("/api")
+	a.Use(s.originCheck(), s.loadSession())
+
+	a.GET("/config", s.publicConfig)
+	a.POST("/auth/register", s.register)
+	a.POST("/auth/login", s.login)
+	a.POST("/auth/logout", s.logout)
+	a.GET("/auth/me", s.me)
+
+	// Публичные разделы
+	a.GET("/subjects", s.subjects)
+	a.GET("/teachers", s.listTeachers)
+	a.GET("/teachers/:id", s.getTeacher)
+	a.GET("/teachers/:id/slots", s.teacherSlots)
+	a.GET("/teachers/:id/photo", s.teacherPhoto)
+	a.GET("/listings", s.listListings)
+
+	// Временные ссылки на файлы (проверка подписи, без cookie)
+	a.GET("/files/:token", s.serveSignedFile)
+	// Шаблон записи (egress) — доступ по подписанному токену
+	a.GET("/recorder/:token/state", s.recorderState)
+	// Вебхук LiveKit (подписан ключом API)
+	a.POST("/livekit/webhook", s.livekitWebhook)
+
+	u := a.Group("")
+	u.Use(requireUser())
+	u.PATCH("/me", s.updateMe)
+	u.GET("/me/profile", s.myTeacherProfile)
+	u.PUT("/me/profile", requireRole("teacher"), s.updateTeacherProfile)
+	u.POST("/me/photo", requireRole("teacher"), s.uploadPhoto)
+
+	u.POST("/listings", requireRole("teacher", "student"), s.createListing)
+	u.GET("/my/listings", s.myListings)
+	u.PUT("/listings/:id", s.updateListing)
+	u.DELETE("/listings/:id", s.deleteListing)
+
+	u.GET("/my/availability", requireRole("teacher"), s.myAvailability)
+	u.POST("/my/availability", requireRole("teacher"), s.addAvailability)
+	u.DELETE("/my/availability/:id", requireRole("teacher"), s.deleteAvailability)
+
+	u.POST("/lessons", requireRole("student"), s.bookLesson)
+	u.GET("/lessons", s.myLessons)
+	u.GET("/my/students", requireRole("teacher"), s.myStudents)
+	u.GET("/my/homework", s.myHomework)
+	u.GET("/lessons/:id", s.getLesson)
+	u.POST("/lessons/:id/cancel", s.cancelLesson)
+	u.POST("/lessons/:id/join", s.joinLesson)
+	u.POST("/lessons/:id/end", requireRole("teacher"), s.endLesson)
+	u.GET("/lessons/:id/ws", s.lessonWS)
+	u.GET("/lessons/:id/board", s.getBoard)
+	u.GET("/lessons/:id/chat", s.getChat)
+
+	u.POST("/lessons/:id/recordings", requireRole("teacher"), s.requestRecording)
+	u.POST("/lessons/:id/recordings/:rid/consent", s.consentRecording)
+	u.POST("/lessons/:id/recordings/:rid/stop", requireRole("teacher"), s.stopRecording)
+	u.GET("/lessons/:id/recordings/:rid/link", s.recordingLink)
+
+	u.POST("/lessons/:id/materials", requireRole("teacher"), s.uploadMaterial)
+	u.DELETE("/lessons/:id/materials/:mid", requireRole("teacher"), s.deleteMaterial)
+	u.GET("/lessons/:id/materials/:mid/link", s.materialLink)
+
+	u.POST("/lessons/:id/homework", requireRole("teacher"), s.createHomework)
+	u.DELETE("/lessons/:id/homework/:hid", requireRole("teacher"), s.deleteHomework)
+	u.GET("/lessons/:id/homework/:hid/link", s.homeworkFileLink)
+	u.POST("/lessons/:id/homework/:hid/submission", requireRole("student"), s.submitHomework)
+	u.GET("/lessons/:id/homework/:hid/submission/link", s.submissionFileLink)
+	u.POST("/lessons/:id/homework/:hid/review", requireRole("teacher"), s.reviewHomework)
+
+	u.POST("/lessons/:id/review", requireRole("student"), s.createReview)
+
+	adm := u.Group("/admin")
+	adm.Use(requireRole("admin"))
+	adm.GET("/listings", s.adminListings)
+	adm.POST("/listings/:id/hide", s.adminHideListing)
+	adm.POST("/listings/:id/unhide", s.adminUnhideListing)
+	adm.GET("/users", s.adminUsers)
+	adm.GET("/stats", s.adminStats)
+
+	r.NoRoute(func(c *gin.Context) { c.JSON(404, gin.H{"error": "Не найдено"}) })
+	return r
+}
+
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		if c.Request.URL.Path == "/api/health" {
+			return
+		}
+		slog.Info("http", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds())
+	}
+}
+
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("Cache-Control", "no-store")
+		c.Next()
+	}
+}
+
+// originCheck — защита от CSRF: изменяющие запросы принимаются только с разрешённых Origin.
+// Вебхук LiveKit проверяется собственной подписью.
+func (s *Server) originCheck() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		m := c.Request.Method
+		if m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions || c.FullPath() == "/api/livekit/webhook" {
+			c.Next()
+			return
+		}
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			// Не браузерные клиенты (curl) не отправляют Origin; браузер всегда отправляет его для POST/PUT/DELETE.
+			// Дополнительно требуем, чтобы запрос не был «простым» form-запросом.
+			if strings.HasPrefix(c.GetHeader("Content-Type"), "application/x-www-form-urlencoded") || strings.HasPrefix(c.GetHeader("Content-Type"), "text/plain") {
+				c.AbortWithStatusJSON(403, gin.H{"error": "Запрос отклонён"})
+				return
+			}
+			c.Next()
+			return
+		}
+		if !s.originAllowed(origin, c.Request.Host) {
+			c.AbortWithStatusJSON(403, gin.H{"error": "Недопустимый источник запроса"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) originAllowed(origin, host string) bool {
+	origin = strings.TrimRight(origin, "/")
+	for _, o := range s.cfg.PublicOrigins {
+		if o == "*" || strings.EqualFold(o, origin) {
+			return true
+		}
+	}
+	// Тот же хост (запрос пришёл через обратный прокси с тем же Host)
+	if i := strings.Index(origin, "://"); i >= 0 && strings.EqualFold(origin[i+3:], host) {
+		return true
+	}
+	return false
+}
+
+func (s *Server) loadSession() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw, err := c.Cookie(sessionCookie)
+		if err != nil || raw == "" {
+			c.Next()
+			return
+		}
+		var u ctxUser
+		err = s.db.QueryRow(c, `
+			SELECT u.id, u.role, u.name, u.email, u.timezone
+			FROM sessions s JOIN users u ON u.id = s.user_id
+			WHERE s.token_hash = $1 AND s.expires_at > now() AND NOT u.blocked`, auth.HashToken(raw)).
+			Scan(&u.ID, &u.Role, &u.Name, &u.Email, &u.Timezone)
+		if err == nil {
+			c.Set("user", &u)
+		}
+		c.Next()
+	}
+}
+
+func currentUser(c *gin.Context) *ctxUser {
+	if v, ok := c.Get("user"); ok {
+		return v.(*ctxUser)
+	}
+	return nil
+}
+
+func requireUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if currentUser(c) == nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "Требуется вход"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func requireRole(roles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		u := currentUser(c)
+		for _, r := range roles {
+			if u != nil && u.Role == r {
+				c.Next()
+				return
+			}
+		}
+		c.AbortWithStatusJSON(403, gin.H{"error": "Недостаточно прав"})
+	}
+}
+
+func fail(c *gin.Context, code int, msg string) {
+	c.AbortWithStatusJSON(code, gin.H{"error": msg})
+}
+
+func internal(c *gin.Context, err error) {
+	if errors.Is(err, context.Canceled) {
+		c.Abort()
+		return
+	}
+	slog.Error("internal error", "path", c.Request.URL.Path, "err", err)
+	c.AbortWithStatusJSON(500, gin.H{"error": "Внутренняя ошибка сервера"})
+}
+
+func (s *Server) publicConfig(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"videoConfigured":     s.cfg.LiveKitConfigured(),
+		"storageConfigured":   s.store != nil,
+		"recordingConfigured": s.cfg.RecordingProblem() == "",
+		"recordingProblem":    s.cfg.RecordingProblem(),
+		"maxUploadMB":         s.cfg.MaxUploadMB,
+		"joinEarlyMinutes":    s.cfg.JoinEarlyMinutes,
+	})
+}

@@ -152,6 +152,12 @@ func serve(ctx context.Context, cfg *config.Config, p *pgxpool.Pool) {
 	srv := api.New(cfg, p, store, lkc)
 	go srv.Hub().Run(ctx)
 	go srv.RunJobs(ctx)
+	srv.StartCodeRuns(ctx)
+	if cfg.CodeRunnerConfigured() {
+		slog.Info("Исполнитель кода настроен", "url", cfg.CodeRunnerURL)
+	} else {
+		slog.Warn("Исполнитель кода не настроен (CODE_RUNNER_URL): редактор работает, запуск недоступен")
+	}
 
 	httpSrv := &http.Server{Addr: cfg.Addr, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

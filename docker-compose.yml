@@ -112,6 +112,10 @@ services:
       S3_BUCKET: ${S3_BUCKET:-ortalyq-private}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-20}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+      # Исполнитель кода (отдельный сервер Judge0, docs/CODE_RUNNER.md). Пусто — запуск кода недоступен.
+      CODE_RUNNER_URL: ${CODE_RUNNER_URL:-}
+      CODE_RUNNER_TOKEN: ${CODE_RUNNER_TOKEN:-}
+      CODE_RUNNER_PYTHON_ID: ${CODE_RUNNER_PYTHON_ID:-71}
     extra_hosts: ["host.docker.internal:host-gateway"]
     # 127.0.0.1:18080 — для вебхуков LiveKit (сеть хоста)
     ports: ["127.0.0.1:18080:18080"]

@@ -22,6 +22,7 @@ import { useAuth } from "@/lib/auth";
 import { formatTime } from "@/lib/format";
 import { useLessonRealtime } from "@/lib/lessonSocket";
 import { Board } from "../board";
+import { CodePanel } from "../code";
 import { ConfirmModal, Modal, Spinner, toast } from "../ui";
 import { DeviceChoice, mediaErrorText } from "./PreJoin";
 
@@ -265,7 +266,8 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
   const isTeacher = detail.myRole === "teacher";
   const otherName = isTeacher ? lesson.studentName : lesson.teacherName;
   const rt = useLessonRealtime(lesson.id, true);
-  const [view, setView] = useState<"board" | "screen">("board");
+  const [view, setView] = useState<"board" | "screen" | "code">("board");
+  const [codeOpened, setCodeOpened] = useState(false); // после первого открытия редактор остаётся смонтированным
   const [clearOpen, setClearOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [recOpen, setRecOpen] = useState(false);
@@ -281,8 +283,12 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
   // Автопереключение на демонстрацию экрана
   const hasScreen = !!media.screen;
   useEffect(() => {
-    setView(hasScreen ? "screen" : "board");
+    setView((v) => (hasScreen ? "screen" : v === "screen" ? "board" : v));
   }, [hasScreen]);
+  const openCode = () => {
+    setCodeOpened(true);
+    setView("code");
+  };
 
   const ended = rt.lessonStatus === "completed" || rt.lessonStatus === "cancelled";
   useEffect(() => {
@@ -406,7 +412,7 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
               }}
               className={`flex-1 rounded-lg py-2 text-sm font-medium ${mobileTab === t ? "bg-brand-600 text-white" : "bg-white text-muted"}`}
             >
-              {t === "board" ? (hasScreen ? "Доска / экран" : "Доска") : `Чат${unread ? ` (${unread})` : ""}`}
+              {t === "board" ? (hasScreen ? "Доска / экран / код" : "Доска / код") : `Чат${unread ? ` (${unread})` : ""}`}
             </button>
           ))}
         </div>
@@ -423,8 +429,15 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
             >
               Экран{media.screenLabel ? `: ${media.screenLabel}` : ""}
             </button>
-            <div className="mx-1 h-6 w-px shrink-0 bg-line" />
-            <div className="flex shrink-0 items-center gap-0.5" role="toolbar" aria-label="Инструменты доски">
+            <button
+              onClick={openCode}
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-semibold ${view === "code" ? "bg-brand-600 text-white" : "text-muted"}`}
+              data-testid="tab-code"
+            >
+              Код
+            </button>
+            <div className={`mx-1 h-6 w-px shrink-0 bg-line ${view === "code" ? "hidden" : ""}`} />
+            <div className={`flex shrink-0 items-center gap-0.5 ${view === "code" ? "hidden" : ""}`} role="toolbar" aria-label="Инструменты доски">
               {tools.map((t) => (
                 <button
                   key={t.type}
@@ -441,7 +454,7 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
               ))}
             </div>
             <div className="flex-1" />
-            <button className="btn-ghost btn-sm shrink-0 text-red-600" onClick={() => setClearOpen(true)}>
+            <button className={`btn-ghost btn-sm shrink-0 text-red-600 ${view === "code" ? "hidden" : ""}`} onClick={() => setClearOpen(true)}>
               🗑️ Очистить
             </button>
           </div>
@@ -456,6 +469,11 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
               />
             </div>
             {view === "screen" && media.screen && <div className="absolute inset-0 bg-ink">{media.screen}</div>}
+            {codeOpened && (
+              <div className={view === "code" ? "absolute inset-0" : "hidden"}>
+                <CodePanel lessonId={lesson.id} socket={rt.socket} status={rt.status} />
+              </div>
+            )}
           </div>
         </main>
         <aside className={`flex min-h-0 flex-col gap-2 lg:w-80 ${mobileTab === "chat" ? "flex flex-1" : "hidden lg:flex"}`}>

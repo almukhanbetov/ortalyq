@@ -1,0 +1,29 @@
+# TLS-прокси перед API Judge0. Сертификат Let's Encrypt выпускается автоматически для RUNNER_DOMAIN
+# (нужны DNS-запись на эту VM и открытые 80/443; запросы не с ALLOWED_IP получают 403).
+{
+	admin off
+}
+
+{$RUNNER_DOMAIN} {
+	request_body {
+		max_size 512KB
+	}
+
+	# route сохраняет порядок строк (без него Caddy сортирует директивы и проверка IP могла бы
+	# выполниться после проксирования).
+	route {
+		# 1. Только сервер приложения ORTALYQ (бэкенд в Kubernetes выходит через NAT узла — с его публичного IP)
+		@denied not remote_ip {$ALLOWED_IP}
+		respond @denied 403
+
+		# 2. Только нужные пути API: отправка и результат запуска, языки, настройки лимитов, версия.
+		#    Ключ доступа (X-Auth-Token) дополнительно проверяет сам Judge0 (AUTHN_TOKEN).
+		@api {
+			method POST GET
+			path /submissions /submissions/* /languages /languages/* /config_info /about
+		}
+		reverse_proxy @api server:2358
+
+		respond 404
+	}
+}

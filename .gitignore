@@ -19,8 +19,9 @@ node_modules/
 out/
 backend/bin/
 *.tsbuildinfo
-# Шрифты Excalidraw копируются из node_modules при сборке (scripts/copy-excalidraw-assets.mjs)
+# Шрифты Excalidraw и Monaco копируются из node_modules при сборке (scripts/copy-excalidraw-assets.mjs)
 frontend/public/fonts/
+frontend/public/monaco/
 
 # Логи и отчёты тестов
 *.log

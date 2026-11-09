@@ -72,6 +72,8 @@ VPS
 | `deploy/k8s/scripts/ortalyq-deploy` | Принудительная команда: миграции, выкат, откат |
 | `deploy/k8s/scripts/backup-postgres.sh` | `pg_dump` в `/srv/ortalyq/backups` |
 | `deploy/nginx/*.conf`, `render-upstreams.sh` | Nginx только для двух новых поддоменов |
+| `deploy/k8s/scripts/set-code-runner.sh` | Подключение к отдельному серверу выполнения кода (Secret `ortalyq-code-runner`) |
+| `deploy/code-runner/*` | Сервер выполнения кода (Judge0 + Caddy) — **отдельная VM**, не этот VPS; см. [CODE_RUNNER.md](CODE_RUNNER.md) |
 
 ### Секреты (только в кластере, не в Git)
 
@@ -82,6 +84,10 @@ Secret `ortalyq-secrets` создаёт `create-secrets.sh`. Значения г
 - `S3_ACCESS_KEY`, `S3_SECRET_KEY`.
 
 Secret `ghcr-pull` — токен для скачивания образов из GHCR.
+
+Secret `ortalyq-code-runner` (необязательный) — адрес и ключ исполнителя кода, создаёт `set-code-runner.sh`. Без него редактор кода работает, запуск недоступен.
+
+Миграция `0004_code_editor` только добавляет таблицы `code_docs` и `code_runs`. Предыдущий образ backend на новой схеме работает (проверено), поэтому откат образа после неё безопасен.
 
 ## 3. GitHub: подготовка
 

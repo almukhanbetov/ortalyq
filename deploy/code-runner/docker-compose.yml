@@ -1,0 +1,74 @@
+# Сервер выполнения кода ORTALYQ: Judge0 CE 1.13.1 + Caddy (TLS и фильтр доступа).
+# ТОЛЬКО для отдельной выделенной VM. Не запускать на сервере приложения (194.31.55.106):
+# контейнеры Judge0 работают в режиме privileged (так требует его песочница isolate), поэтому
+# побег из песочницы = root на этой машине. На ней не должно быть других сервисов и секретов.
+#
+# Состав повторяет официальный docker-compose.yml релиза Judge0 v1.13.1
+# (https://github.com/judge0/judge0/releases/tag/v1.13.1); изменения:
+#   • API Judge0 (2358) не публикуется — доступен только Caddy во внутренней сети;
+#   • Caddy принимает HTTPS только с IP сервера приложения и только нужные пути API.
+# Настройки — в judge0.conf (см. configure-judge0.sh) и .env (RUNNER_DOMAIN, ALLOWED_IP).
+
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options: { max-size: 50m, max-file: "3" }
+
+services:
+  server:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    networks: [internal, edge]
+    restart: always
+    <<: *default-logging
+
+  workers:
+    image: judge0/judge0:1.13.1
+    command: ["./scripts/workers"]
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    networks: [internal]
+    restart: always
+    <<: *default-logging
+
+  db:
+    image: postgres:16.2
+    env_file: judge0.conf
+    volumes:
+      - judge0-db:/var/lib/postgresql/data/
+    networks: [internal]
+    restart: always
+    <<: *default-logging
+
+  redis:
+    image: redis:7.2.4
+    command: ["bash", "-c", 'docker-entrypoint.sh --appendonly no --requirepass "$$REDIS_PASSWORD"']
+    env_file: judge0.conf
+    networks: [internal]
+    restart: always
+    <<: *default-logging
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      RUNNER_DOMAIN: ${RUNNER_DOMAIN:?задайте RUNNER_DOMAIN в .env}
+      ALLOWED_IP: ${ALLOWED_IP:?задайте ALLOWED_IP в .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks: [edge]
+    depends_on: [server]
+    restart: always
+    <<: *default-logging
+
+networks:
+  internal: { internal: true } # БД и Redis Judge0 без выхода наружу
+  edge: {}
+
+volumes:
+  judge0-db:
+  caddy-data:

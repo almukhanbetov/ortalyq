@@ -38,6 +38,18 @@ type Config struct {
 	MaxUploadMB      int
 	JoinEarlyMinutes int
 	JoinLateMinutes  int
+
+	// Исполнитель кода (Judge0 CE на отдельном изолированном сервере). Пустой URL — запуск недоступен.
+	CodeRunnerURL        string // например https://runner.internal:2358 (доступен только бэкенду)
+	CodeRunnerToken      string // значение AUTHN_TOKEN исполнителя (серверный секрет)
+	CodeRunnerAuthHeader string // AUTHN_HEADER исполнителя, по умолчанию X-Auth-Token
+	CodeRunnerPythonID   int    // language_id Python 3 в Judge0 (CE 1.13.1: 71 = Python 3.8.1)
+	CodeRunnerCppID      int    // 0 — язык не показывается
+	CodeRunnerJSID       int    // 0 — язык не показывается
+	CodeRunCPUSeconds    float64
+	CodeRunWallSeconds   float64
+	CodeRunMemoryMB      int
+	CodeRunMaxConcurrent int // одновременных запусков на весь бэкенд
 }
 
 func env(key, def string) string {
@@ -71,6 +83,18 @@ func envInt(key string, def int) int {
 	return n
 }
 
+func envFloat(key string, def float64) float64 {
+	v := env(key, "")
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return def
+	}
+	return f
+}
+
 func Load() (*Config, error) {
 	c := &Config{
 		Addr:                  env("BACKEND_ADDR", ":18080"),
@@ -95,6 +119,16 @@ func Load() (*Config, error) {
 		MaxUploadMB:           envInt("MAX_UPLOAD_MB", 20),
 		JoinEarlyMinutes:      envInt("JOIN_EARLY_MINUTES", 15),
 		JoinLateMinutes:       envInt("JOIN_LATE_MINUTES", 60),
+		CodeRunnerURL:         strings.TrimRight(env("CODE_RUNNER_URL", ""), "/"),
+		CodeRunnerToken:       env("CODE_RUNNER_TOKEN", ""),
+		CodeRunnerAuthHeader:  env("CODE_RUNNER_AUTH_HEADER", "X-Auth-Token"),
+		CodeRunnerPythonID:    envInt("CODE_RUNNER_PYTHON_ID", 71),
+		CodeRunnerCppID:       envInt("CODE_RUNNER_CPP_ID", 0),
+		CodeRunnerJSID:        envInt("CODE_RUNNER_JS_ID", 0),
+		CodeRunCPUSeconds:     envFloat("CODE_RUN_CPU_SECONDS", 2),
+		CodeRunWallSeconds:    envFloat("CODE_RUN_WALL_SECONDS", 5),
+		CodeRunMemoryMB:       envInt("CODE_RUN_MEMORY_MB", 128),
+		CodeRunMaxConcurrent:  envInt("CODE_RUN_MAX_CONCURRENT", 4),
 	}
 	for _, o := range strings.Split(env("PUBLIC_ORIGINS", "http://localhost:13000"), ",") {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -113,8 +147,19 @@ func Load() (*Config, error) {
 	if c.EgressS3Region == "" {
 		c.EgressS3Region = c.S3Region
 	}
+	if c.CodeRunnerURL != "" && !strings.HasPrefix(c.CodeRunnerURL, "http://") && !strings.HasPrefix(c.CodeRunnerURL, "https://") {
+		return nil, fmt.Errorf("CODE_RUNNER_URL must start with http:// or https://")
+	}
+	// Ограничения не выше максимумов Judge0 по умолчанию (MAX_CPU_TIME_LIMIT=15, MAX_WALL_TIME_LIMIT=20, MAX_MEMORY_LIMIT=512000 KB).
+	c.CodeRunCPUSeconds = min(c.CodeRunCPUSeconds, 10)
+	c.CodeRunWallSeconds = max(min(c.CodeRunWallSeconds, 20), 1)
+	c.CodeRunMemoryMB = max(min(c.CodeRunMemoryMB, 512), 32)
+	c.CodeRunMaxConcurrent = max(min(c.CodeRunMaxConcurrent, 32), 1)
 	return c, nil
 }
+
+// CodeRunnerConfigured — задан адрес исполнителя кода.
+func (c *Config) CodeRunnerConfigured() bool { return c.CodeRunnerURL != "" }
 
 func (c *Config) LiveKitConfigured() bool {
 	return c.LiveKitURL != "" && c.LiveKitAPIKey != "" && c.LiveKitAPISecret != ""

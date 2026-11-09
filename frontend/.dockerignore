@@ -3,6 +3,7 @@ node_modules
 .next
 out
 public/fonts
+public/monaco
 test-results
 playwright-report
 *.tsbuildinfo

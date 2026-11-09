@@ -64,6 +64,15 @@ spec:
               valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: S3_ACCESS_KEY}}
             - name: S3_SECRET_KEY
               valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: S3_SECRET_KEY}}
+            # Исполнитель кода (Judge0 на ОТДЕЛЬНОМ сервере, docs/CODE_RUNNER.md). Secret необязателен:
+            # пока его нет, редактор кода работает, а запуск показывает «Сервис выполнения не настроен».
+            # Создаётся ../scripts/set-code-runner.sh.
+            - name: CODE_RUNNER_URL
+              valueFrom: {secretKeyRef: {name: ortalyq-code-runner, key: CODE_RUNNER_URL, optional: true}}
+            - name: CODE_RUNNER_TOKEN
+              valueFrom: {secretKeyRef: {name: ortalyq-code-runner, key: CODE_RUNNER_TOKEN, optional: true}}
+            - name: CODE_RUNNER_PYTHON_ID
+              valueFrom: {secretKeyRef: {name: ortalyq-code-runner, key: CODE_RUNNER_PYTHON_ID, optional: true}}
           ports:
             - {name: http, containerPort: 18080}
           startupProbe:

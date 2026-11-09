@@ -55,6 +55,7 @@ type room struct {
 	order    []string
 	revision int64
 	dirty    bool
+	code     codeState
 }
 
 type Hub struct {
@@ -91,6 +92,7 @@ func (h *Hub) flushAll() {
 	h.mu.Unlock()
 	for _, r := range list {
 		h.persist(r)
+		h.persistCode(r)
 	}
 }
 
@@ -125,7 +127,7 @@ func (h *Hub) getRoom(ctx context.Context, lessonID string) *room {
 		return r
 	}
 	els, order, rev := h.loadBoard(ctx, lessonID)
-	r := &room{id: lessonID, clients: map[*Client]bool{}, elements: els, order: order, revision: rev}
+	r := &room{id: lessonID, clients: map[*Client]bool{}, elements: els, order: order, revision: rev, code: h.loadCode(ctx, lessonID)}
 	h.rooms[lessonID] = r
 	return r
 }
@@ -168,6 +170,7 @@ func (h *Hub) Flush(lessonID string) {
 	h.mu.Unlock()
 	if r != nil {
 		h.persist(r)
+		h.persistCode(r)
 	}
 }
 
@@ -290,9 +293,10 @@ func (h *Hub) Serve(ctx context.Context, conn *websocket.Conn, lessonID string, 
 	r.mu.Unlock()
 	if empty {
 		h.persist(r)
+		h.persistCode(r)
 		h.mu.Lock()
 		r.mu.Lock()
-		if len(r.clients) == 0 && !r.dirty {
+		if len(r.clients) == 0 && !r.dirty && !r.code.dirty {
 			delete(h.rooms, lessonID)
 		}
 		r.mu.Unlock()
@@ -337,6 +341,10 @@ type inbound struct {
 	Elements []json.RawMessage `json:"elements"`
 	Body     string            `json:"body"`
 	ClientID string            `json:"clientId"`
+	Update   string            `json:"update"`
+	Cid      string            `json:"cid"`
+	UpTo     int64             `json:"upTo"`
+	State    string            `json:"state"`
 }
 
 func (h *Hub) handle(ctx context.Context, r *room, c *Client, data []byte, chat ChatStore) {
@@ -357,6 +365,12 @@ func (h *Hub) handle(ctx context.Context, r *room, c *Client, data []byte, chat 
 		b, _ := json.Marshal(map[string]any{"type": "board.snapshot", "board": map[string]any{"elements": json.RawMessage(r.snapshotLocked()), "revision": r.revision}})
 		r.mu.Unlock()
 		c.enqueue(b)
+	case "code.sync":
+		h.codeSync(r, c)
+	case "code.update":
+		h.codeUpdate(r, c, msg.Update, truncID(msg.Cid))
+	case "code.compact":
+		h.codeCompact(r, c, msg.UpTo, msg.State)
 	case "chat.send":
 		if chat == nil {
 			return
@@ -454,3 +468,10 @@ func (h *Hub) clearBoard(r *room) {
 
 // ChatLimit — количество последних сообщений в начальном состоянии.
 func ChatLimit() int { return chatHistoryLimit }
+
+func truncID(s string) string {
+	if len(s) > 64 {
+		return s[:64]
+	}
+	return s
+}

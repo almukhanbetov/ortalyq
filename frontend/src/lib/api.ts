@@ -200,6 +200,7 @@ export interface PublicConfig {
   recordingProblem: string;
   maxUploadMB: number;
   joinEarlyMinutes: number;
+  codeRunnerConfigured: boolean;
 }
 
 export interface ChatMessage {
@@ -209,4 +210,51 @@ export interface ChatMessage {
   body: string;
   createdAt: string;
   clientId?: string;
+}
+
+// ---- Редактор кода ----
+
+export type CodeRunStatus =
+  | "running"
+  | "completed"
+  | "runtime_error"
+  | "compile_error"
+  | "time_limit"
+  | "memory_limit"
+  | "output_limit"
+  | "unavailable"
+  | "not_configured"
+  | "cancelled"
+  | "internal_error";
+
+export interface CodeRun {
+  id: string;
+  userId: string;
+  userName: string;
+  language: string;
+  status: CodeRunStatus;
+  stdout: string;
+  stderr: string;
+  message: string;
+  exitCode: number | null;
+  timeMs: number | null;
+  memoryKb: number | null;
+  truncated: boolean;
+  sourceBytes: number;
+  stdinBytes: number;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface CodeLanguage {
+  id: string;
+  label: string;
+  monaco: string;
+}
+
+export interface CodeInfo {
+  languages: CodeLanguage[];
+  runnerConfigured: boolean;
+  lastRun: CodeRun | null;
+  limits: { sourceBytes: number; stdinBytes: number; outputBytes: number; cpuSeconds: number; wallSeconds: number; memoryMb: number };
 }

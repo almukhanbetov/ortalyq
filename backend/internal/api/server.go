@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ortalyq/backend/internal/auth"
+	"ortalyq/backend/internal/coderun"
 	"ortalyq/backend/internal/config"
 	"ortalyq/backend/internal/lk"
 	"ortalyq/backend/internal/realtime"
@@ -25,13 +26,22 @@ type Server struct {
 	lk     *lk.Client     // nil, если LiveKit не настроен
 	signer *auth.Signer
 	hub    *realtime.Hub
+	runner coderun.Runner // nil, если исполнитель кода не настроен
+	runs   *codeRuns
 }
 
 func New(cfg *config.Config, db *pgxpool.Pool, store *storage.Store, lkc *lk.Client) *Server {
 	s := &Server{cfg: cfg, db: db, store: store, lk: lkc, signer: auth.NewSigner(cfg.AppSecret)}
 	s.hub = realtime.NewHub(db)
+	s.runs = newCodeRuns(cfg.CodeRunMaxConcurrent)
+	if cfg.CodeRunnerConfigured() {
+		s.runner = coderun.NewJudge0(cfg.CodeRunnerURL, cfg.CodeRunnerAuthHeader, cfg.CodeRunnerToken)
+	}
 	return s
 }
+
+// SetCodeRunner подменяет исполнитель кода (тесты).
+func (s *Server) SetCodeRunner(r coderun.Runner) { s.runner = r }
 
 func (s *Server) Hub() *realtime.Hub { return s.hub }
 
@@ -114,6 +124,9 @@ func (s *Server) Router() *gin.Engine {
 	u.GET("/lessons/:id/ws", s.lessonWS)
 	u.GET("/lessons/:id/board", s.getBoard)
 	u.GET("/lessons/:id/chat", s.getChat)
+	u.GET("/lessons/:id/code", s.getCode)
+	u.POST("/lessons/:id/code/runs", s.createCodeRun)
+	u.POST("/lessons/:id/code/runs/:rid/cancel", s.cancelCodeRun)
 
 	u.POST("/lessons/:id/recordings", requireRole("teacher"), s.requestRecording)
 	u.POST("/lessons/:id/recordings/:rid/consent", s.consentRecording)
@@ -273,11 +286,12 @@ func internal(c *gin.Context, err error) {
 
 func (s *Server) publicConfig(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"videoConfigured":     s.cfg.LiveKitConfigured(),
-		"storageConfigured":   s.store != nil,
-		"recordingConfigured": s.cfg.RecordingProblem() == "",
-		"recordingProblem":    s.cfg.RecordingProblem(),
-		"maxUploadMB":         s.cfg.MaxUploadMB,
-		"joinEarlyMinutes":    s.cfg.JoinEarlyMinutes,
+		"videoConfigured":      s.cfg.LiveKitConfigured(),
+		"storageConfigured":    s.store != nil,
+		"recordingConfigured":  s.cfg.RecordingProblem() == "",
+		"recordingProblem":     s.cfg.RecordingProblem(),
+		"maxUploadMB":          s.cfg.MaxUploadMB,
+		"joinEarlyMinutes":     s.cfg.JoinEarlyMinutes,
+		"codeRunnerConfigured": s.runner != nil,
 	})
 }

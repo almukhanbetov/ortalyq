@@ -1,0 +1,76 @@
+# LiveKit SFU (видеосвязь). Работает в сети хоста — WebRTC-медиа без NAT kube-proxy.
+# Порты на хосте:
+#   127.0.0.1:7880/tcp — сигнальный канал и API; снаружи доступен только через Nginx (wss/https livekit.ortalyq.compserv.cloud)
+#   7881/tcp           — ICE/TCP (запасной путь медиа, если UDP закрыт) — открыть в firewall
+#   7882/udp           — медиа (UDP mux, один порт)                    — открыть в firewall
+# Встроенный TURN выключен: его relay-диапазон пересёкся бы с NodePort, а TURN/TLS на 443 занят Nginx.
+# Ключи API не хранятся в манифесте: Kubernetes подставляет $(LIVEKIT_API_KEY)/$(LIVEKIT_API_SECRET) из Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: livekit}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # порты хоста: два пода одновременно не запустятся
+  selector:
+    matchLabels: {app.kubernetes.io/name: livekit}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: livekit}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet   # чтобы резолвить redis/backend.ortalyq.svc.cluster.local
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: livekit
+          image: livekit/livekit-server:v1.13.11
+          args: ["--node-ip", "$(LIVEKIT_NODE_IP)"]
+          env:
+            - name: LIVEKIT_NODE_IP
+              valueFrom: {configMapKeyRef: {name: ortalyq-config, key: LIVEKIT_NODE_IP}}
+            - name: LIVEKIT_API_KEY
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: LIVEKIT_API_KEY}}
+            - name: LIVEKIT_API_SECRET
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: LIVEKIT_API_SECRET}}
+            - name: LIVEKIT_CONFIG
+              value: |
+                port: 7880
+                bind_addresses: ["127.0.0.1"]
+                rtc:
+                  tcp_port: 7881
+                  udp_port: 7882
+                  use_external_ip: false
+                redis:
+                  address: redis.ortalyq.svc.cluster.local:6379
+                keys:
+                  $(LIVEKIT_API_KEY): $(LIVEKIT_API_SECRET)
+                webhook:
+                  api_key: $(LIVEKIT_API_KEY)
+                  urls:
+                    - http://backend.ortalyq.svc.cluster.local:18080/api/livekit/webhook
+                room:
+                  empty_timeout: 300
+                  departure_timeout: 60
+                logging:
+                  level: info
+          ports:
+            - {name: http, containerPort: 7880, protocol: TCP}
+            - {name: rtc-tcp, containerPort: 7881, protocol: TCP}
+            - {name: rtc-udp, containerPort: 7882, protocol: UDP}
+          readinessProbe:
+            httpGet: {host: 127.0.0.1, path: /, port: 7880}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {host: 127.0.0.1, path: /, port: 7880}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}

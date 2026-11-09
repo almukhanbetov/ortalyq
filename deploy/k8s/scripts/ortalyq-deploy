@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Принудительная команда SSH для GitHub Actions (устанавливается в /usr/local/sbin/ortalyq-deploy).
+# Работает только с kubeconfig сервисного аккаунта ortalyq-deployer (namespace ortalyq).
+#
+# Команды (берутся из SSH_ORIGINAL_COMMAND, строго проверяются):
+#   deploy <sha40> <sha256:backend-digest> <sha256:frontend-digest>
+#       1) Job миграций на новом образе backend (если упал — приложение не трогается);
+#       2) смена образов backend, затем frontend; ожидание rollout с таймаутом;
+#       3) при неудаче rollout — автоматический откат образов (схема БД НЕ откатывается).
+#   status    — состояние приложения
+#   rollback  — вернуть предыдущие ReplicaSet backend и frontend (схема БД не откатывается)
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export KUBECONFIG=${ORTALYQ_KUBECONFIG:-/etc/ortalyq/deployer.kubeconfig}
+NS=ortalyq
+REGISTRY=ghcr.io/almukhanbetov
+STATE=${ORTALYQ_STATE_DIR:-/var/lib/ortalyq-deploy}
+ROLLOUT_TIMEOUT=300s
+MIGRATE_TIMEOUT=600
+
+k() { kubectl -n "$NS" --request-timeout=60s "$@"; }
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+die() { log "ОШИБКА: $1" >&2; exit "${2:-1}"; }
+
+read -r -a argv <<< "${SSH_ORIGINAL_COMMAND:-$*}"
+[[ ${#argv[@]} -ge 1 && ${#argv[@]} -le 4 ]] || die "использование: deploy <sha> <backend-digest> <frontend-digest> | status | rollback"
+
+# Не более одного развёртывания одновременно (дополнительно к concurrency в GitHub Actions).
+mkdir -p "$STATE"
+exec 9>"$STATE/deploy.lock"
+if ! flock -w 900 9; then die "другое развёртывание не завершилось за 15 минут"; fi
+
+images() { k get deploy backend frontend -o jsonpath='{range .items[*]}{.metadata.name}={.spec.template.spec.containers[0].image}{"\n"}{end}'; }
+
+status() {
+  k get deploy,statefulset -o wide
+  k get pods -o wide
+  echo "Образы:"; images | sed 's/^/  /'
+  echo "Последние Job миграций:"; k get jobs -l app.kubernetes.io/name=migrate --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -5
+}
+
+wait_rollout() {
+  local d=$1
+  if ! k rollout status "deployment/$d" --timeout="$ROLLOUT_TIMEOUT"; then
+    log "rollout $d не завершился за $ROLLOUT_TIMEOUT"
+    k get pods -l "app.kubernetes.io/name=$d" -o wide || true
+    k logs "deployment/$d" --tail=60 || true
+    return 1
+  fi
+}
+
+undo() {
+  for d in "$@"; do
+    log "Откат образа $d к предыдущему ReplicaSet"
+    k rollout undo "deployment/$d" || true
+    k rollout status "deployment/$d" --timeout="$ROLLOUT_TIMEOUT" || log "ВНИМАНИЕ: откат $d не завершился — нужна ручная проверка"
+  done
+  log "Схема БД не откатывалась: старые образы должны работать с новой схемой (миграции только расширяющие)."
+}
+
+migrate() {
+  local image=$1 sha=$2 job
+  job="migrate-${sha:0:12}-$(date +%s)"
+  log "Миграции: Job $job"
+  k apply -f - <<JOB
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $job
+  namespace: $NS
+  labels: {app.kubernetes.io/name: migrate, app.kubernetes.io/part-of: ortalyq}
+  annotations: {ortalyq/sha: "$sha"}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: $MIGRATE_TIMEOUT
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: migrate, app.kubernetes.io/part-of: ortalyq}
+    spec:
+      restartPolicy: Never
+      imagePullSecrets: [{name: ghcr-pull}]
+      automountServiceAccountToken: false
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: migrate
+          image: $image
+          args: ["migrate"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: DATABASE_URL}}
+            - name: APP_SECRET
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: APP_SECRET}}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+JOB
+  local end=$((SECONDS + MIGRATE_TIMEOUT + 30)) s f
+  while (( SECONDS < end )); do
+    s=$(k get job "$job" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+    f=$(k get job "$job" -o jsonpath='{.status.failed}' 2>/dev/null || true)
+    [[ ${s:-0} -ge 1 ]] && { k logs "job/$job" --tail=50 || true; log "Миграции применены"; return 0; }
+    [[ ${f:-0} -ge 1 ]] && break
+    sleep 3
+  done
+  k logs "job/$job" --tail=100 || true
+  k get pods -l "job-name=$job" -o wide || true
+  return 1
+}
+
+deploy() {
+  local sha=$1 bd=$2 fd=$3
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "некорректный SHA"
+  [[ $bd =~ ^sha256:[0-9a-f]{64}$ && $fd =~ ^sha256:[0-9a-f]{64}$ ]] || die "некорректный digest"
+  local B="$REGISTRY/ortalyq-backend:$sha@$bd" F="$REGISTRY/ortalyq-frontend:$sha@$fd"
+  log "Развёртывание $sha"
+  log "Текущие образы:"; images | sed 's/^/  /'
+
+  migrate "$B" "$sha" || die "миграции не прошли — приложение не изменялось" 2
+
+  k set image deployment/backend "backend=$B"
+  k annotate deployment/backend kubernetes.io/change-cause="deploy $sha" --overwrite >/dev/null
+  if ! wait_rollout backend; then undo backend; die "backend не запустился — откат выполнен" 3; fi
+
+  k set image deployment/frontend "frontend=$F"
+  k annotate deployment/frontend kubernetes.io/change-cause="deploy $sha" --overwrite >/dev/null
+  if ! wait_rollout frontend; then undo frontend backend; die "frontend не запустился — откат backend и frontend выполнен" 3; fi
+
+  echo "$(date -u +%FT%TZ) $sha $bd $fd" >> "$STATE/history.log"
+  log "Готово:"; images | sed 's/^/  /'
+}
+
+case "${argv[0]}" in
+  deploy)   [[ ${#argv[@]} == 4 ]] || die "deploy <sha> <backend-digest> <frontend-digest>"; deploy "${argv[1]}" "${argv[2]}" "${argv[3]}" ;;
+  status)   [[ ${#argv[@]} == 1 ]] || die "status без аргументов"; status ;;
+  rollback) [[ ${#argv[@]} == 1 ]] || die "rollback без аргументов"; undo backend frontend; status ;;
+  *)        die "неизвестная команда" ;;
+esac

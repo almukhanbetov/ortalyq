@@ -1,0 +1,45 @@
+# Ресурсы приложения ORTALYQ в namespace ortalyq (без кластерных PV — они в ../storage).
+# Применяется администратором через ../scripts/apply.sh (подставляет текущие образы вместо тега "bootstrap").
+# Секреты в Git не хранятся: их создаёт ../scripts/create-secrets.sh прямо в кластере.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ortalyq
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ortalyq
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - rbac-deployer.yaml
+  - postgres.yaml
+  - rustfs.yaml
+  - redis.yaml
+  - backend.yaml
+  - frontend.yaml
+  - livekit.yaml
+  - egress.yaml
+
+# Несекретные настройки. Хэш в имени ConfigMap перезапускает поды при изменении.
+configMapGenerator:
+  - name: ortalyq-config
+    literals:
+      - PUBLIC_ORIGINS=https://ortalyq.compserv.cloud
+      - COOKIE_SECURE=true
+      # Бэкенд обращается к API LiveKit через Nginx (HTTPS); браузер — к wss://livekit...
+      - LIVEKIT_URL=https://livekit.ortalyq.compserv.cloud
+      - LIVEKIT_PUBLIC_URL=wss://livekit.ortalyq.compserv.cloud
+      # Публичный IP узла, который LiveKit объявляет браузерам для медиа (UDP 7882 / TCP 7881)
+      - LIVEKIT_NODE_IP=194.31.55.106
+      - RECORDING_ENABLED=true
+      # Шаблон записи открывает headless Chrome сервиса Egress (сеть хоста + DNS кластера)
+      - RECORDING_TEMPLATE_BASE_URL=http://frontend.ortalyq.svc.cluster.local:3000
+      - S3_ENDPOINT=rustfs:9000
+      - EGRESS_S3_ENDPOINT=http://rustfs.ortalyq.svc.cluster.local:9000
+      - S3_BUCKET=ortalyq-private
+      - S3_REGION=us-east-1
+      - S3_USE_SSL=false
+      - MAX_UPLOAD_MB=20
+      - JOIN_EARLY_MINUTES=15
+      - JOIN_LATE_MINUTES=60

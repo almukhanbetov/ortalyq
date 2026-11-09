@@ -1,0 +1,117 @@
+# Развёртывание в Kubernetes на VPS. Только ручной запуск (Actions → Deploy → Run workflow).
+# Секреты лежат в GitHub Environment "production" и недоступны workflow из pull_request.
+#
+# Подключение: SSH на VPS под отдельным пользователем ortalyq-deploy, ключ которого в authorized_keys
+# ограничен принудительной командой /usr/local/sbin/ortalyq-deploy. Эта команда работает с kubeconfig
+# сервисного аккаунта ortalyq-deployer (Role только в namespace ortalyq). API Kubernetes в интернет не открывается.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Полный SHA коммита из main (пусто — текущий HEAD main)"
+        required: false
+        default: ""
+      action:
+        description: "deploy — выкатить образы этого SHA; status — показать состояние; rollback — вернуть предыдущий ReplicaSet (схему БД не откатывает)"
+        type: choice
+        options: [deploy, status, rollback]
+        default: deploy
+
+permissions:
+  contents: read
+  packages: read
+
+# Одновременно выполняется только одно развёртывание; следующее ждёт, а не отменяет текущее.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://ortalyq.compserv.cloud
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Определить коммит
+        id: rev
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          sha="${INPUT_SHA:-$(git rev-parse HEAD)}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then echo "Нужен полный 40-символьный SHA"; exit 1; fi
+          if ! git merge-base --is-ancestor "$sha" origin/main; then echo "Коммит $sha не входит в main"; exit 1; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Вход в GHCR (только чтение)
+        if: inputs.action == 'deploy'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Образы опубликованы? Получить digest
+        if: inputs.action == 'deploy'
+        id: img
+        env:
+          SHA: ${{ steps.rev.outputs.sha }}
+        run: |
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          for c in backend frontend; do
+            ref="ghcr.io/${owner}/ortalyq-${c}:${SHA}"
+            d=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"') || true
+            if ! [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Образ $ref не найден. Дождитесь завершения workflow Images для этого коммита."; exit 1
+            fi
+            echo "${c}=${d}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Настроить SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+
+      - name: ${{ inputs.action }}
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          ACTION: ${{ inputs.action }}
+          SHA: ${{ steps.rev.outputs.sha }}
+          BACKEND_DIGEST: ${{ steps.img.outputs.backend }}
+          FRONTEND_DIGEST: ${{ steps.img.outputs.frontend }}
+        run: |
+          case "$ACTION" in
+            deploy)   cmd="deploy $SHA $BACKEND_DIGEST $FRONTEND_DIGEST" ;;
+            *)        cmd="$ACTION" ;;
+          esac
+          ssh -i ~/.ssh/deploy_key -p "$PORT" \
+            -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o ServerAliveInterval=30 -o ConnectTimeout=20 \
+            "$USER_@$HOST" "$cmd"
+
+      - name: Проверка сайта снаружи
+        if: inputs.action != 'status'
+        run: |
+          for _ in $(seq 1 10); do
+            curl -fsS --max-time 10 https://ortalyq.compserv.cloud/api/ready && exit 0; sleep 6
+          done
+          echo "Сайт не отвечает на /api/ready"; exit 1
+
+      - name: Удалить ключ
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

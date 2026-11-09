@@ -1,0 +1,67 @@
+# LiveKit Egress — запись занятий. Headless Chrome открывает шаблон
+#   http://frontend.ortalyq.svc.cluster.local:3000/recorder/<id>/<token>
+# (RECORDING_TEMPLATE_BASE_URL) и загружает MP4 напрямую в S3:
+#   http://rustfs.ortalyq.svc.cluster.local:9000 (EGRESS_S3_ENDPOINT), бакет ortalyq-private.
+# Сеть хоста: подключается к LiveKit по ws://127.0.0.1:7880; DNS кластера — для frontend/rustfs/redis.
+# Нужен CAP_SYS_ADMIN (песочница Chrome), как в docker-compose.
+# Порт здоровья 17891/tcp на хосте — наружу не открывать.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: egress}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: egress}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: egress}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      # Даём текущей записи завершиться и загрузиться в S3 при остановке пода
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: egress
+          image: livekit/egress:v1.15.0
+          env:
+            - name: LIVEKIT_API_KEY
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: LIVEKIT_API_KEY}}
+            - name: LIVEKIT_API_SECRET
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: LIVEKIT_API_SECRET}}
+            - name: EGRESS_CONFIG_BODY
+              value: |
+                api_key: $(LIVEKIT_API_KEY)
+                api_secret: $(LIVEKIT_API_SECRET)
+                ws_url: ws://127.0.0.1:7880
+                insecure: true
+                health_port: 17891
+                log_level: info
+                redis:
+                  address: redis.ortalyq.svc.cluster.local:6379
+          readinessProbe:
+            tcpSocket: {host: 127.0.0.1, port: 17891}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {host: 127.0.0.1, port: 17891}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            # Запись комнаты (Chrome + кодирование) требует ~2–3 CPU на одну одновременную запись.
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 4Gi}
+          securityContext:
+            capabilities: {add: [SYS_ADMIN]}
+          volumeMounts:
+            - {name: shm, mountPath: /dev/shm}
+            - {name: tmp, mountPath: /home/egress/tmp}
+      volumes:
+        - name: shm   # разделяемая память Chrome
+          emptyDir: {medium: Memory, sizeLimit: 1Gi}
+        - name: tmp   # временные файлы записи до загрузки в S3
+          emptyDir: {sizeLimit: 10Gi}

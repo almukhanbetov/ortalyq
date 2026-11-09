@@ -1,0 +1,115 @@
+# Сборка образов backend/frontend и публикация в GHCR с неизменяемым тегом = полный SHA коммита.
+# pull_request: образы только собираются, токен — только чтение, вход в реестр не выполняется.
+# push в main: публикация; если образ с таким тегом уже есть, он не перезаписывается.
+name: Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: [backend/**, frontend/**, .github/workflows/images.yml, scripts/check-build-context.sh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-pr:
+    name: Сборка ${{ matrix.component }} (без публикации)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Проверка сборочного контекста
+        run: scripts/check-build-context.sh ${{ matrix.component }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.component }}
+          push: false
+          build-args: |
+            BACKEND_INTERNAL_URL=http://backend:18080
+          cache-from: type=gha,scope=${{ matrix.component }}
+
+  publish:
+    name: Публикация ${{ matrix.component }}
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Имя образа
+        id: img
+        run: |
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${owner}/ortalyq-${{ matrix.component }}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Проверка сборочного контекста
+        run: scripts/check-build-context.sh ${{ matrix.component }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Тег уже опубликован?
+        id: exists
+        env:
+          REF: ${{ steps.img.outputs.ref }}
+        run: |
+          if docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "Образ $REF уже существует — не перезаписываем"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Сборка и публикация
+        if: steps.exists.outputs.found != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.component }}
+          push: true
+          tags: ${{ steps.img.outputs.ref }}
+          # frontend: адрес бэкенда для rewrites /api встраивается при сборке — Service "backend" в namespace ortalyq
+          build-args: |
+            BACKEND_INTERNAL_URL=http://backend:18080
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Итог
+        env:
+          REF: ${{ steps.img.outputs.ref }}
+        run: |
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "### ${{ matrix.component }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${REF}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"

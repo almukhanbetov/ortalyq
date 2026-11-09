@@ -8,6 +8,10 @@
 *.p12
 *.pfx
 secrets/
+*.kubeconfig
+kubeconfig*
+ortalyq-gha
+ortalyq-gha.pub
 
 # Зависимости и сборка
 node_modules/

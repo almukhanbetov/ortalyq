@@ -1,0 +1,82 @@
+# S3-совместимое хранилище RustFS (закрытый бакет: материалы, домашние задания, записи уроков).
+# Данные — на локальном PV /srv/ortalyq/s3 (Retain, привязка к узлу). Веб-консоль выключена,
+# S3 API доступен только внутри кластера (ClusterIP): бэкенду и сервису Egress.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data
+  namespace: ortalyq
+spec:
+  storageClassName: ortalyq-local
+  volumeName: ortalyq-s3
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: rustfs}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: rustfs}
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: rustfs}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # один RWO-том — два пода одновременно недопустимы
+  selector:
+    matchLabels: {app.kubernetes.io/name: rustfs}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: rustfs}
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:1.0.3
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: S3_ACCESS_KEY}}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: ortalyq-secrets, key: S3_SECRET_KEY}}
+            - {name: RUSTFS_ADDRESS, value: "0.0.0.0:9000"}
+            - {name: RUSTFS_CONSOLE_ENABLE, value: "false"}
+            - {name: RUSTFS_VOLUMES, value: /data}
+          ports:
+            - {name: s3, containerPort: 9000}
+          readinessProbe:
+            tcpSocket: {port: 9000}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 9000}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: rustfs-data}

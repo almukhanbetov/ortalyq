@@ -141,6 +141,15 @@ BASE=https://localhost:8443 node classroom-entry.mjs                    # вхо
 
 `api-check.sh` и e2e изменяют демо-данные: после них выполните `seed`. Для e2e нужен Google Chrome (`CHROME=/путь`) и Docker (для ffprobe).
 
+## Развёртывание на сервере (Kubernetes, CI/CD)
+
+GitHub Actions:
+- `CI` — тесты Go с PostgreSQL, проверка TypeScript, сборка Next.js;
+- `Images` — образы в GHCR с тегом SHA коммита;
+- `Deploy` — только ручной запуск.
+
+Манифесты Kubernetes лежат в `deploy/k8s`, конфигурации Nginx для поддоменов — в `deploy/nginx`. Пошаговая настройка VPS, секретов, сертификатов, а также процедуры отката и восстановления — в [docs/DEPLOY.md](docs/DEPLOY.md).
+
 ## Безопасность (кратко)
 
 - Пароли хешируются argon2id. Сессия — случайный токен в HttpOnly-cookie (SameSite=Lax), в БД хранится только SHA-256 токена. Попытки входа ограничены по частоте.

@@ -1,0 +1,53 @@
+# Постоянные тома для одного узла (кластерные ресурсы, применяет администратор: ../scripts/setup-storage.sh).
+# local-том + nodeAffinity: данные привязаны к каталогу на конкретном узле.
+# Retain: при удалении PVC/namespace данные и PV сохраняются (PV перейдёт в Released, см. docs/DEPLOY.md).
+# claimRef: каждый PV может занять только «свой» PVC.
+# StorageClass с таким именем создавать не нужно — привязка статическая.
+# __NODE_NAME__ подставляет setup-storage.sh (имя узла из kubectl get nodes).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ortalyq-postgres
+  labels: {app.kubernetes.io/part-of: ortalyq, app.kubernetes.io/name: postgres}
+spec:
+  capacity: {storage: 20Gi}
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ortalyq-local
+  claimRef:
+    namespace: ortalyq
+    name: postgres-data
+  local:
+    path: /srv/ortalyq/postgres
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["__NODE_NAME__"]
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ortalyq-s3
+  labels: {app.kubernetes.io/part-of: ortalyq, app.kubernetes.io/name: rustfs}
+spec:
+  capacity: {storage: 100Gi}
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ortalyq-local
+  claimRef:
+    namespace: ortalyq
+    name: rustfs-data
+  local:
+    path: /srv/ortalyq/s3
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["__NODE_NAME__"]

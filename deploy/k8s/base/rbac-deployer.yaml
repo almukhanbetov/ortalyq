@@ -1,0 +1,60 @@
+# Сервисный аккаунт для CI/CD. Права только в namespace ortalyq и только на то, что нужно для
+# выката: сменить образ backend/frontend, дождаться rollout, запустить Job миграций, читать логи.
+# Нет доступа к Secrets, ConfigMaps, PVC, RBAC и к другим namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ortalyq-deployer
+  namespace: ortalyq
+automountServiceAccountToken: false
+---
+# Долгоживущий токен для kubeconfig на VPS (файл доступен только пользователю ortalyq-deploy).
+# Отозвать: kubectl -n ortalyq delete secret ortalyq-deployer-token (новый токен создастся при apply).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ortalyq-deployer-token
+  namespace: ortalyq
+  annotations:
+    kubernetes.io/service-account.name: ortalyq-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ortalyq-deployer
+  namespace: ortalyq
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["backend", "frontend"]
+    verbs: ["patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ortalyq-deployer
+  namespace: ortalyq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ortalyq-deployer
+subjects:
+  - kind: ServiceAccount
+    name: ortalyq-deployer
+    namespace: ortalyq

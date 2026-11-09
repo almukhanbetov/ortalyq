@@ -1,0 +1,10 @@
+# LiveKit и Egress требуют hostNetwork (WebRTC без NAT) и CAP_SYS_ADMIN (Chrome записи),
+# поэтому уровень Pod Security для namespace — privileged; предупреждения — по baseline.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ortalyq
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline

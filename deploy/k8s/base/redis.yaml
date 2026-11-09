@@ -1,0 +1,59 @@
+# Redis для LiveKit и Egress (очереди/маршрутизация). Без сохранения на диск, как в Compose.
+# Доступен только внутри кластера.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: redis}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: redis}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ortalyq
+  labels: {app.kubernetes.io/name: redis}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: redis}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: redis}
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: redis
+          image: redis:8.6.8-alpine
+          args: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
+          ports:
+            - {name: redis, containerPort: 6379}
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data   # рабочий каталог redis; данные не сохраняются (--save "")
+          emptyDir: {}

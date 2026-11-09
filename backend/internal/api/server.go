@@ -51,7 +51,17 @@ func (s *Server) Router() *gin.Engine {
 	r.Use(gin.Recovery(), requestLogger(), securityHeaders())
 	r.MaxMultipartMemory = 8 << 20
 
+	// /api/health — процесс жив (liveness); /api/ready — есть связь с БД (readiness).
 	r.GET("/api/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+	r.GET("/api/ready", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.db.Ping(ctx); err != nil {
+			c.JSON(503, gin.H{"ok": false, "error": "database unavailable"})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
 
 	a := r.Group("/api")
 	a.Use(s.originCheck(), s.loadSession())
@@ -139,7 +149,7 @@ func requestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		if c.Request.URL.Path == "/api/health" {
+		if p := c.Request.URL.Path; p == "/api/health" || p == "/api/ready" {
 			return
 		}
 		slog.Info("http", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds())

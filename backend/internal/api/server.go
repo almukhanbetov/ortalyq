@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ type ctxUser struct {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), requestLogger(), securityHeaders())
+	r.Use(gin.Recovery(), requestLogger(), securityHeaders(), serverTimeHeader())
 	r.MaxMultipartMemory = 8 << 20
 
 	// /api/health — процесс жив (liveness); /api/ready — есть связь с БД (readiness).
@@ -175,6 +176,18 @@ func securityHeaders() gin.HandlerFunc {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
+		c.Next()
+	}
+}
+
+// ServerTimeHeader — серверное время (мс с эпохи UTC) в каждом ответе API. По нему клиент считает
+// статус урока, остаток времени и доступность кнопки входа, а не по часам устройства:
+// при неверных часах или поясе устройства один урок иначе выглядел бы у участников по-разному.
+const ServerTimeHeader = "X-Server-Time"
+
+func serverTimeHeader() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set(ServerTimeHeader, strconv.FormatInt(time.Now().UnixMilli(), 10))
 		c.Next()
 	}
 }

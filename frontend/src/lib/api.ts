@@ -1,3 +1,5 @@
+import { noteServerTime, SERVER_TIME_HEADER } from "./serverClock";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -29,6 +31,7 @@ async function parse<T>(res: Response): Promise<T> {
 export async function api<T = unknown>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
   const { json, headers, ...rest } = init;
   let res: Response;
+  const sentAt = Date.now();
   try {
     res = await fetch(path, {
       credentials: "include",
@@ -43,6 +46,7 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
   } catch {
     throw new ApiError(0, "Нет соединения с сервером. Проверьте интернет и попробуйте снова.");
   }
+  noteServerTime(res.headers.get(SERVER_TIME_HEADER), sentAt, Date.now());
   return parse<T>(res);
 }
 

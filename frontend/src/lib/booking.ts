@@ -2,6 +2,7 @@
 // Начало — любая минута (без сетки); время никогда не сдвигается автоматически —
 // недопустимое отклоняется с понятной причиной. Окончательная проверка — на сервере.
 import { addDaysIso, hmIn, isoDayIn, zonedToUtc } from "./format";
+import { serverNow } from "./serverClock";
 
 export interface FreeInterval {
   startsAt: string; // свободно с
@@ -32,7 +33,7 @@ export function earliestStart(now: Date): number {
  * Группирует интервалы по дням пользователя: день → диапазоны допустимого начала.
  * Уже прошедшее время отбрасывается (интервалы могли быть загружены давно).
  */
-export function rangesByDay(intervals: FreeInterval[], tz: string, now = new Date()): Map<string, DayRange[]> {
+export function rangesByDay(intervals: FreeInterval[], tz: string, now = new Date(serverNow())): Map<string, DayRange[]> {
   const out = new Map<string, DayRange[]>();
   const min = earliestStart(now);
   for (const iv of intervals) {
@@ -63,7 +64,7 @@ export function checkStart(
   tz: string,
   intervals: FreeInterval[],
   myLessons: Busy[],
-  now = new Date(),
+  now = new Date(serverNow()),
 ): StartCheck {
   if (!day) return { ok: false, reason: "Выберите дату." };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return { ok: false, reason: "Укажите время начала в формате ЧЧ:ММ, например 10:05." };

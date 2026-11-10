@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { onServerClockChange, serverNow } from "./serverClock";
 
 // ---- Актуальность расписания ----
 // Запись и отмена меняют занятость преподавателя и ученика. Открытые страницы (форма записи,
@@ -78,12 +79,21 @@ export function useCities() {
   return useCatalogMeta().cities;
 }
 
-/** Обновляет компонент раз в interval мс (для «через N минут», доступности кнопки входа). */
+/**
+ * Текущий момент по серверным часам (не по часам устройства); обновляется раз в interval мс
+ * и сразу после замера смещения часов (для статуса урока, «через N минут», кнопки входа).
+ */
 export function useNow(interval = 30000) {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => serverNow());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), interval);
-    return () => clearInterval(t);
+    const tick = () => setNow(serverNow());
+    tick();
+    const t = setInterval(tick, interval);
+    const off = onServerClockChange(tick);
+    return () => {
+      clearInterval(t);
+      off();
+    };
   }, [interval]);
   return now;
 }

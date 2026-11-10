@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { checkStart, rangesByDay, type Busy, type FreeInterval } from "@/lib/booking";
 import { formatDateTime, formatDayLabel, formatPrice, hmIn, plural, tzLabel } from "@/lib/format";
 import { hmProblem, isCompleteHm, padHm } from "@/lib/time";
+import { serverNow } from "@/lib/serverClock";
 import { TimeInput } from "@/components/TimeInput";
 import { notifyLessonsChanged, useLessonsRefresh } from "@/lib/hooks";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, Empty, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
@@ -123,7 +124,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   const [serverReason, setServerReason] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState(() => new Date(serverNow()));
 
   // silent — фоновое обновление: без индикатора загрузки, выбранные день и время сохраняются,
   // при ошибке остаются прежние данные.
@@ -137,7 +138,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         .then((r) => {
           setData({ intervals: r.intervals ?? [], myLessons: r.myLessons ?? [] });
           setError("");
-          setNow(new Date());
+          setNow(new Date(serverNow()));
         })
         .catch((e) => {
           if (silent) return;
@@ -150,9 +151,9 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   useEffect(() => load(), [load]);
   // Отмена или запись в любой вкладке, возврат на вкладку, раз в минуту — свежие свободные интервалы.
   useLessonsRefresh(() => load(true));
-  // Текущее время для проверки «в прошлом» (раз в 30 с)
+  // Текущее время для проверки «в прошлом» (раз в 30 с) — по серверным часам, не по часам устройства
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30_000);
+    const t = setInterval(() => setNow(new Date(serverNow())), 30_000);
     return () => clearInterval(t);
   }, []);
 

@@ -6,6 +6,7 @@ import { api, errorMessage, LessonDetail } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
 import { formatTime } from "@/lib/format";
 import { lessonTiming } from "@/lib/lessonTime";
+import { serverNow } from "@/lib/serverClock";
 import { ClassRoom, JoinInfo } from "@/components/room/ClassRoom";
 import { DeviceChoice, PreJoin } from "@/components/room/PreJoin";
 import { Loading } from "@/components/ui";
@@ -78,7 +79,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return <Message title={l.status === "completed" ? "Занятие завершено" : "Занятие отменено"} text="Материалы, доска и записи доступны на странице занятия." lessonId={id} />;
   if (!detail.canJoin) {
     // Опоздание не продлевает урок: после окончания обычный вход закрыт.
-    if (!l.alwaysOpen && Date.now() >= Date.parse(l.endsAt))
+    if (!l.alwaysOpen && serverNow() >= Date.parse(l.endsAt))
       return (
         <Message
           title="Время занятия истекло"

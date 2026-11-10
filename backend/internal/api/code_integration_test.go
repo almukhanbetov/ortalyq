@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +20,7 @@ import (
 	"ortalyq/backend/internal/coderun"
 	"ortalyq/backend/internal/config"
 	"ortalyq/backend/internal/db"
+	"ortalyq/backend/internal/testdb"
 )
 
 // Интеграционный тест редактора кода (HTTP + WebSocket + PostgreSQL). Требует TEST_DATABASE_URL.
@@ -56,16 +56,9 @@ type tenv struct {
 }
 
 func setupCode(t *testing.T) *tenv {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL не задан")
-	}
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	// Своя пустая база на каждый тест: пакеты go test ./... идут параллельно и не должны видеть данные друг друга.
+	pool := testdb.New(t)
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}

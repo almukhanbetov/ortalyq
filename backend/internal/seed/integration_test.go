@@ -2,27 +2,20 @@ package seed
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"ortalyq/backend/internal/db"
+	"ortalyq/backend/internal/testdb"
 )
 
 // Интеграционный тест на реальном PostgreSQL. Запускается, только если задан TEST_DATABASE_URL
-// (в CI — сервис postgres). База должна быть пустой и одноразовой: тест создаёт демо-данные.
+// (в CI — сервис postgres). Тест работает в собственной пустой базе (testdb.New): снимок ниже
+// охватывает всю БД, и записи параллельно идущих тестов других пакетов в него попадать не должны.
 func TestMigrateSeedLocalizeIdempotent(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL не задан")
-	}
+	pool := testdb.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 
 	for i := 0; i < 2; i++ { // повторный запуск миграций ничего не меняет
 		if err := db.Migrate(ctx, pool); err != nil {

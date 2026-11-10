@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError, errorMessage, Teacher } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { checkStart, rangesByDay, type Busy, type FreeInterval } from "@/lib/booking";
 import { formatDateTime, formatDayLabel, formatPrice, hmIn, plural, tzLabel } from "@/lib/format";
+import { hmProblem, isCompleteHm, padHm } from "@/lib/time";
+import { TimeInput } from "@/components/TimeInput";
 import { notifyLessonsChanged, useLessonsRefresh } from "@/lib/hooks";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, Empty, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
 
@@ -107,16 +109,6 @@ export default function TeacherPage({ params }: { params: Promise<{ id: string }
   );
 }
 
-/** Маска ввода ЧЧ:ММ (24 ч): только цифры и двоеточие; время не изменяется, только форматируется. */
-function maskHm(raw: string): string {
-  if (raw.includes(":")) {
-    const [h, m = ""] = raw.split(":");
-    return `${h.replace(/\D/g, "").slice(0, 2)}:${m.replace(/\D/g, "").slice(0, 2)}`;
-  }
-  const d = raw.replace(/\D/g, "").slice(0, 4);
-  return d.length <= 2 ? d : `${d.slice(0, 2)}:${d.slice(2)}`;
-}
-
 function BookingPanel({ teacher }: { teacher: Teacher }) {
   const { user, tz } = useAuth();
   const router = useRouter();
@@ -127,6 +119,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   const [error, setError] = useState("");
   const [day, setDay] = useState("");
   const [time, setTime] = useState("");
+  const [timeBlurred, setTimeBlurred] = useState(false);
   const [serverReason, setServerReason] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -171,11 +164,20 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
 
   const check = useMemo(
     // Проверяем только полностью введённое время (Ч:ММ или ЧЧ:ММ), без ошибок на середине ввода.
-    () => (/^\d{1,2}:\d\d$/.test(time) ? checkStart(day, time.padStart(5, "0"), duration, tz, data?.intervals ?? [], data?.myLessons ?? [], now) : null),
+    () => (isCompleteHm(time) && !hmProblem(time) ? checkStart(day, padHm(time), duration, tz, data?.intervals ?? [], data?.myLessons ?? [], now) : null),
     [day, time, duration, tz, data, now],
   );
-  // Причина отказа сервера сбрасывается при изменении выбора или обновлении свободного времени.
-  useEffect(() => setServerReason(""), [day, time, duration, data]);
+  // Ошибка формата: 24:00, 10:75 — сразу; неполное значение (например, «10:») — после выхода из поля.
+  const formatReason = time && (isCompleteHm(time) || timeBlurred) ? hmProblem(time) : "";
+  // Причина отказа сервера сбрасывается при изменении выбора и при последующих обновлениях
+  // свободного времени (например, время освободилось после отмены). Перезагрузка, вызванная
+  // самим отказом 409, причину сохраняет — иначе вместо «время занял другой ученик» была бы общая фраза.
+  const keepReasonOnReload = useRef(false);
+  useEffect(() => setServerReason(""), [day, time, duration]);
+  useEffect(() => {
+    if (keepReasonOnReload.current) keepReasonOnReload.current = false;
+    else setServerReason("");
+  }, [data]);
 
   const book = async () => {
     if (!check?.ok) return;
@@ -191,8 +193,11 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
     } catch (e) {
       // Причину показываем у поля; выбранное время не меняем.
       setConfirmOpen(false);
-      if (e instanceof ApiError && e.status === 409) load(true);
       setServerReason(errorMessage(e));
+      if (e instanceof ApiError && e.status === 409) {
+        keepReasonOnReload.current = true;
+        load(true);
+      }
     } finally {
       setBusy(false);
     }
@@ -200,7 +205,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
 
   const canBook = user?.role === "student";
   const ranges = byDay.get(day) ?? [];
-  const reason = serverReason || (check && !check.ok ? check.reason : "");
+  const reason = serverReason || formatReason || (check && !check.ok ? check.reason : "");
 
   return (
     <aside className="card h-fit min-w-0 p-6 lg:sticky lg:top-24" id="book">
@@ -290,7 +295,10 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
                       type="button"
                       className="text-left hover:underline disabled:no-underline"
                       disabled={!canBook}
-                      onClick={() => setTime(hmIn(r.from, tz))}
+                      onClick={() => {
+                        setTime(hmIn(r.from, tz));
+                        setTimeBlurred(false);
+                      }}
                       title="Подставить самое раннее начало"
                     >
                       <b>
@@ -310,20 +318,18 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
                 Время начала (ЧЧ:ММ)
               </label>
               <div className="flex items-center gap-2">
-                <input
+                <TimeInput
                   id="start-time"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  placeholder="ЧЧ:ММ"
-                  maxLength={5}
-                  className="input w-28 font-mono tabular-nums"
+                  className="w-28"
                   value={time}
                   disabled={!canBook}
-                  onChange={(e) => setTime(maskHm(e.target.value))}
-                  onBlur={() => setTime((v) => (/^\d:\d\d$/.test(v) ? `0${v}` : v))}
-                  aria-describedby="start-hint"
-                  aria-invalid={!!reason}
+                  onChange={(v) => {
+                    setTime(v);
+                    setTimeBlurred(false);
+                  }}
+                  onBlur={() => setTimeBlurred(true)}
+                  describedBy="start-hint"
+                  invalid={!!reason}
                 />
                 <span className="text-xs text-muted">{tzLabel(tz)}</span>
               </div>

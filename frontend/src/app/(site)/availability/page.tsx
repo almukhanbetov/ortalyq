@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
 import { dayKey, formatDayLabel, formatTime, todayIn, tzLabel, zonedToUtc } from "@/lib/format";
+import { hmProblem, hmToMinutes, isCompleteHm, padHm } from "@/lib/time";
+import { TimeInput } from "@/components/TimeInput";
 import { ConfirmModal, Empty, ErrorBox, Loading, PageHeader, Skeleton, Spinner, toast } from "@/components/ui";
 
 interface Window {
@@ -20,6 +22,8 @@ export default function AvailabilityPage() {
   const [from, setFrom] = useState("10:00");
   const [to, setTo] = useState("14:00");
   const [repeat, setRepeat] = useState(1);
+  // Поле, из которого ушёл фокус (или была попытка отправки), — для него показываем ошибки неполного ввода.
+  const [touched, setTouched] = useState({ from: false, to: false });
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState<Window | null>(null);
 
@@ -40,8 +44,28 @@ export default function AvailabilityPage() {
     if (ready) load();
   }, [ready, load]);
 
+  // Ошибки времени: формат ЧЧ:ММ (00–23, 00–59) и окончание позже начала (в пределах одной даты).
+  const fromProblem = hmProblem(from);
+  const toProblem = hmProblem(to);
+  const fromMin = hmToMinutes(from);
+  const toMin = hmToMinutes(to);
+  const orderProblem =
+    fromMin !== null && toMin !== null && toMin <= fromMin
+      ? `Время окончания (${padHm(to)}) должно быть позже начала (${padHm(from)}). Интервал не может переходить через полночь.`
+      : "";
+  const timeInvalid = !!(fromProblem || toProblem || orderProblem);
+  // Вне диапазона (24:00, 10:75) — сразу; пустое или неполное — после выхода из поля или попытки отправки.
+  const shownFrom = touched.from || isCompleteHm(from) ? fromProblem : "";
+  const shownTo = touched.to || isCompleteHm(to) ? toProblem : "";
+
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (timeInvalid) {
+      setTouched({ from: true, to: true });
+      return;
+    }
+    const fromHm = padHm(from);
+    const toHm = padHm(to);
     setBusy(true);
     let created = 0;
     const errors: string[] = [];
@@ -52,7 +76,7 @@ export default function AvailabilityPage() {
       try {
         await api("/api/my/availability", {
           method: "POST",
-          json: { startsAt: zonedToUtc(ds, from, tz).toISOString(), endsAt: zonedToUtc(ds, to, tz).toISOString() },
+          json: { startsAt: zonedToUtc(ds, fromHm, tz).toISOString(), endsAt: zonedToUtc(ds, toHm, tz).toISOString() },
         });
         created++;
       } catch (err) {
@@ -99,14 +123,47 @@ export default function AvailabilityPage() {
             <label className="label" htmlFor="date">Дата</label>
             <input id="date" type="date" className="input" required min={todayIn(tz)} value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label" htmlFor="from">С</label>
-              <input id="from" type="time" step={1800} className="input" required value={from} onChange={(e) => setFrom(e.target.value)} />
+          <div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label" htmlFor="from">С (ЧЧ:ММ)</label>
+                <TimeInput
+                  id="from"
+                  value={from}
+                  onChange={(v) => {
+                    setFrom(v);
+                    setTouched((t) => ({ ...t, from: false }));
+                  }}
+                  onBlur={() => setTouched((t) => ({ ...t, from: true }))}
+                  invalid={!!shownFrom || !!orderProblem}
+                  describedBy="time-hint"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="to">До (ЧЧ:ММ)</label>
+                <TimeInput
+                  id="to"
+                  value={to}
+                  onChange={(v) => {
+                    setTo(v);
+                    setTouched((t) => ({ ...t, to: false }));
+                  }}
+                  onBlur={() => setTouched((t) => ({ ...t, to: true }))}
+                  invalid={!!shownTo || !!orderProblem}
+                  describedBy="time-hint"
+                />
+              </div>
             </div>
-            <div>
-              <label className="label" htmlFor="to">До</label>
-              <input id="to" type="time" step={1800} className="input" required value={to} onChange={(e) => setTo(e.target.value)} />
+            <div id="time-hint" className="mt-1 min-h-5 text-sm" aria-live="polite" data-testid="time-status">
+              {shownFrom || shownTo || orderProblem ? (
+                <span className="text-red-700">
+                  {shownFrom && <>«С»: {shownFrom} </>}
+                  {shownTo && <>«До»: {shownTo} </>}
+                  {orderProblem}
+                </span>
+              ) : (
+                <span className="text-muted">24-часовой формат, любая минута. Часовой пояс: {tzLabel(tz)}.</span>
+              )}
             </div>
           </div>
           <div>
@@ -118,10 +175,10 @@ export default function AvailabilityPage() {
               <option value={8}>8 недель подряд</option>
             </select>
           </div>
-          <button className="btn-primary w-full" disabled={busy}>
+          <button className="btn-primary w-full" disabled={busy} data-testid="add-window">
             {busy && <Spinner className="h-4 w-4 text-white" />} Добавить
           </button>
-          <p className="text-xs text-muted">Ученики выбирают начало занятия с шагом 30 минут внутри интервала. Уже занятое время скрывается автоматически.</p>
+          <p className="text-xs text-muted">Ученики выбирают любое начало занятия (с точностью до минуты), при котором урок целиком помещается в интервал. Уже занятое время скрывается автоматически.</p>
         </form>
         <div>
           {error && <ErrorBox message={error} onRetry={load} />}

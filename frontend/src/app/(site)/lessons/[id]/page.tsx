@@ -4,7 +4,7 @@ import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { api, ChatMessage, errorMessage, Homework, LessonDetail, Recording, upload } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
-import { useNow } from "@/lib/hooks";
+import { notifyLessonsChanged, useLessonsRefresh, useNow } from "@/lib/hooks";
 import {
   formatDate,
   formatDateTime,
@@ -41,6 +41,8 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
   useEffect(() => {
     if (ready) load();
   }, [ready, load]);
+  // Отмена второй стороной или в другой вкладке видна без перезахода
+  useLessonsRefresh(() => ready && load());
 
   // Пока запись обрабатывается — периодически обновляем статус
   const processing = data?.recordings.some((r) => ["starting", "recording", "processing"].includes(r.status));
@@ -72,6 +74,7 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
       await api(`/api/lessons/${id}/cancel`, { method: "POST", json: {} });
       toast("Занятие отменено");
       setCancelOpen(false);
+      notifyLessonsChanged(); // освобождённое время сразу появляется в открытых формах записи и списках
       load();
     } catch (e) {
       toast(errorMessage(e), "err");
@@ -112,7 +115,7 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
                   </button>
                 )
               ))}
-            {l.status === "scheduled" && (
+            {l.status === "scheduled" && (l.alwaysOpen || now < new Date(l.startsAt).getTime()) && (
               <button className="btn-secondary" onClick={() => setCancelOpen(true)}>
                 Отменить
               </button>

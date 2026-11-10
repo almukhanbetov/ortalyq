@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
-import { formatDate, plural } from "@/lib/format";
+import { useLessonsRefresh } from "@/lib/hooks";
+import { formatDate, plural, tzLabel } from "@/lib/format";
 import { LessonCard } from "@/components/LessonCard";
 import { Empty, ErrorBox, Loading, PageHeader, Skeleton } from "@/components/ui";
 
@@ -25,25 +26,31 @@ export default function LessonsPage() {
   const [students, setStudents] = useState<Student[] | null>(null);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      if (tab === "students") {
-        setStudents(null);
-        setStudents((await api<{ students: Student[] }>("/api/my/students")).students);
-      } else {
-        setLessons(null);
-        setLessons((await api<{ lessons: Lesson[] }>(`/api/lessons?scope=${tab}`)).lessons);
+  // silent — фоновое обновление без скелетона; при ошибке остаётся прежний список.
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setError("");
+      try {
+        if (tab === "students") {
+          if (!silent) setStudents(null);
+          setStudents((await api<{ students: Student[] }>("/api/my/students")).students);
+        } else {
+          if (!silent) setLessons(null);
+          setLessons((await api<{ lessons: Lesson[] }>(`/api/lessons?scope=${tab}`)).lessons);
+        }
+      } catch (e) {
+        if (silent) return;
+        setError(errorMessage(e));
+        setLessons([]);
+        setStudents([]);
       }
-    } catch (e) {
-      setError(errorMessage(e));
-      setLessons([]);
-      setStudents([]);
-    }
-  }, [tab]);
+    },
+    [tab],
+  );
   useEffect(() => {
     if (ready) load();
   }, [ready, load]);
+  useLessonsRefresh(() => ready && load(true));
 
   if (!ready || !user) return <Loading />;
   const tabs: [Tab, string][] = [
@@ -54,7 +61,7 @@ export default function LessonsPage() {
 
   return (
     <div>
-      <PageHeader title="Мои занятия" subtitle="Вход в виртуальный класс, расписание и история уроков" />
+      <PageHeader title="Мои занятия" subtitle={`Вход в виртуальный класс, расписание и история уроков · время указано в часовом поясе ${tzLabel(tz)}`} />
       <div className="mb-6 inline-flex rounded-xl border border-line bg-white p-1">
         {tabs.map(([t, label]) => (
           <button
@@ -66,7 +73,7 @@ export default function LessonsPage() {
           </button>
         ))}
       </div>
-      {error && <ErrorBox message={error} onRetry={load} />}
+      {error && <ErrorBox message={error} onRetry={() => load()} />}
       {tab === "students" ? (
         students === null ? (
           <Skeleton className="h-32" />

@@ -7,6 +7,7 @@ import { api, ApiError, errorMessage, Teacher } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { checkStart, rangesByDay, type Busy, type FreeInterval } from "@/lib/booking";
 import { formatDateTime, formatDayLabel, formatPrice, hmIn, plural, tzLabel } from "@/lib/format";
+import { notifyLessonsChanged, useLessonsRefresh } from "@/lib/hooks";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, Empty, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
 
 interface Review {
@@ -131,24 +132,38 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
-  const load = useCallback(() => {
-    setData(null);
-    setError("");
-    api<{ intervals: FreeInterval[]; myLessons: Busy[] }>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
-      .then((r) => setData({ intervals: r.intervals ?? [], myLessons: r.myLessons ?? [] }))
-      .catch((e) => {
-        setError(errorMessage(e));
-        setData({ intervals: [], myLessons: [] });
-      });
-  }, [teacher.id, duration]);
-  useEffect(load, [load]);
+  // silent — фоновое обновление: без индикатора загрузки, выбранные день и время сохраняются,
+  // при ошибке остаются прежние данные.
+  const load = useCallback(
+    (silent = false) => {
+      if (!silent) {
+        setData(null);
+        setError("");
+      }
+      api<{ intervals: FreeInterval[]; myLessons: Busy[] }>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
+        .then((r) => {
+          setData({ intervals: r.intervals ?? [], myLessons: r.myLessons ?? [] });
+          setError("");
+          setNow(new Date());
+        })
+        .catch((e) => {
+          if (silent) return;
+          setError(errorMessage(e));
+          setData({ intervals: [], myLessons: [] });
+        });
+    },
+    [teacher.id, duration],
+  );
+  useEffect(() => load(), [load]);
+  // Отмена или запись в любой вкладке, возврат на вкладку, раз в минуту — свежие свободные интервалы.
+  useLessonsRefresh(() => load(true));
   // Текущее время для проверки «в прошлом» (раз в 30 с)
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(t);
   }, []);
 
-  const byDay = useMemo(() => rangesByDay(data?.intervals ?? [], tz), [data, tz]);
+  const byDay = useMemo(() => rangesByDay(data?.intervals ?? [], tz, now), [data, tz, now]);
   useEffect(() => {
     // Выбранный день сохраняется, пока в нём есть свободное время; время начала не трогаем.
     if (data && (!day || !byDay.has(day))) setDay(byDay.keys().next().value ?? "");
@@ -159,7 +174,8 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
     () => (/^\d{1,2}:\d\d$/.test(time) ? checkStart(day, time.padStart(5, "0"), duration, tz, data?.intervals ?? [], data?.myLessons ?? [], now) : null),
     [day, time, duration, tz, data, now],
   );
-  useEffect(() => setServerReason(""), [day, time, duration]);
+  // Причина отказа сервера сбрасывается при изменении выбора или обновлении свободного времени.
+  useEffect(() => setServerReason(""), [day, time, duration, data]);
 
   const book = async () => {
     if (!check?.ok) return;
@@ -170,12 +186,13 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         json: { teacherId: teacher.id, startsAt: check.start.toISOString(), duration, subject, note },
       });
       toast("Вы записаны на занятие");
+      notifyLessonsChanged();
       router.push(`/lessons/${r.id}`);
     } catch (e) {
       // Причину показываем у поля; выбранное время не меняем.
-      setServerReason(errorMessage(e));
       setConfirmOpen(false);
-      if (e instanceof ApiError && e.status === 409) load();
+      if (e instanceof ApiError && e.status === 409) load(true);
+      setServerReason(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -237,7 +254,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
       </div>
 
       <div className="mt-5">
-        {error && <ErrorBox message={error} onRetry={load} />}
+        {error && <ErrorBox message={error} onRetry={() => load()} />}
         {data === null ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted">
             <Spinner className="h-4 w-4" /> Загружаем свободное время…
@@ -277,7 +294,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
                       title="Подставить самое раннее начало"
                     >
                       <b>
-                        {hmIn(r.interval.startsAt, tz)}–{hmIn(r.interval.endsAt, tz)}
+                        {hmIn(r.freeFrom, tz)}–{hmIn(r.interval.endsAt, tz)}
                       </b>{" "}
                       <span className="text-muted">
                         · начало с {hmIn(r.from, tz)} до {hmIn(r.to, tz)}

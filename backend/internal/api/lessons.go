@@ -410,12 +410,22 @@ func (s *Server) cancelLesson(c *gin.Context) {
 		fail(c, 409, "Отменить можно только запланированное занятие")
 		return
 	}
+	// Отменяется только будущее занятие: начавшееся (или прошедшее) время освобождать незачем —
+	// записаться на него всё равно нельзя, а неначавшиеся уроки закрывает фоновая задача.
+	now := time.Now()
+	if !l.AlwaysOpen && !l.StartsAt.After(now) {
+		fail(c, 409, "Занятие уже началось — отменить можно только до начала")
+		return
+	}
 	var req struct {
 		Reason string `json:"reason"`
 	}
 	c.ShouldBindJSON(&req)
-	tag, err := s.db.Exec(c, `UPDATE lessons SET status='cancelled', cancelled_by=$1, cancel_reason=$2 WHERE id=$3 AND status='scheduled'`,
-		currentUser(c).ID, truncate(strings.TrimSpace(req.Reason), 300), l.ID)
+	// После смены статуса интервал сразу свободен: запросы занятости и EXCLUDE-ограничения
+	// не учитывают status='cancelled'. Занятие не удаляется — остаётся в истории.
+	tag, err := s.db.Exec(c, `UPDATE lessons SET status='cancelled', cancelled_by=$1, cancel_reason=$2
+		WHERE id=$3 AND status='scheduled' AND (always_open OR starts_at > $4)`,
+		currentUser(c).ID, truncate(strings.TrimSpace(req.Reason), 300), l.ID, now)
 	if err != nil {
 		internal(c, err)
 		return

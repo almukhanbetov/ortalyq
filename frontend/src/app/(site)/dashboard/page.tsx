@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson, Teacher } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
+import { useLessonsRefresh } from "@/lib/hooks";
 import { formatDate } from "@/lib/format";
 import { canEnter, LessonCard } from "@/components/LessonCard";
 import { Empty, ErrorBox, Loading, Notice, PageHeader, Skeleton } from "@/components/ui";
@@ -32,9 +33,9 @@ export default function Dashboard() {
   const [profile, setProfile] = useState<Teacher | null>(null);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!user || user.role === "admin") return;
-    setError("");
+    if (!silent) setError("");
     try {
       const [l, h] = await Promise.all([
         api<{ lessons: Lesson[] }>("/api/lessons?scope=upcoming"),
@@ -47,6 +48,7 @@ export default function Dashboard() {
         setProfile(p.profile);
       }
     } catch (e) {
+      if (silent) return; // фоновое обновление не затирает показанные данные
       setError(errorMessage(e));
       setLessons([]);
       setHomework([]);
@@ -55,6 +57,7 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, [load]);
+  useLessonsRefresh(() => load(true));
 
   if (!ready || !user) return <Loading />;
   if (user.role === "admin") return <AdminDashboard />;
@@ -89,7 +92,7 @@ export default function Dashboard() {
           Укажите предметы и стоимость — без этого вас не видно в каталоге. <Link href="/profile" className="font-semibold underline">Перейти в профиль</Link>
         </Notice>
       )}
-      {error && <ErrorBox message={error} onRetry={load} />}
+      {error && <ErrorBox message={error} onRetry={() => load()} />}
 
       {openNow && (
         <section className="overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 to-indigo-700 p-6 text-white shadow-lg sm:p-8" aria-label="Открытый класс">

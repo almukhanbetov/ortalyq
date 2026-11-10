@@ -16,18 +16,30 @@ export interface Busy {
 export interface DayRange {
   from: Date;
   to: Date;
+  /** Начало свободного времени, но не раньше текущего момента. */
+  freeFrom: Date;
   interval: FreeInterval;
 }
 
 const MIN = 60_000;
 
-/** Группирует интервалы по дням пользователя: день → диапазоны допустимого начала. */
-export function rangesByDay(intervals: FreeInterval[], tz: string): Map<string, DayRange[]> {
+/** Первая целая минута строго позже now — как earliestStart на сервере. */
+export function earliestStart(now: Date): number {
+  return Math.floor(now.getTime() / MIN) * MIN + MIN;
+}
+
+/**
+ * Группирует интервалы по дням пользователя: день → диапазоны допустимого начала.
+ * Уже прошедшее время отбрасывается (интервалы могли быть загружены давно).
+ */
+export function rangesByDay(intervals: FreeInterval[], tz: string, now = new Date()): Map<string, DayRange[]> {
   const out = new Map<string, DayRange[]>();
+  const min = earliestStart(now);
   for (const iv of intervals) {
-    const ivFrom = new Date(iv.startsAt).getTime();
+    const ivFrom = Math.max(new Date(iv.startsAt).getTime(), min);
+    if (ivFrom > new Date(iv.lastStartAt).getTime()) continue;
     const last = new Date(iv.lastStartAt).getTime();
-    let day = isoDayIn(iv.startsAt, tz);
+    let day = isoDayIn(new Date(ivFrom), tz);
     const lastDay = isoDayIn(iv.lastStartAt, tz);
     for (let guard = 0; day <= lastDay && guard < 40; guard++, day = addDaysIso(day, 1)) {
       const dayStart = zonedToUtc(day, "00:00", tz).getTime();
@@ -36,7 +48,7 @@ export function rangesByDay(intervals: FreeInterval[], tz: string): Map<string, 
       const to = Math.min(last, next - MIN);
       if (from > to) continue;
       if (!out.has(day)) out.set(day, []);
-      out.get(day)!.push({ from: new Date(from), to: new Date(to), interval: iv });
+      out.get(day)!.push({ from: new Date(from), to: new Date(to), freeFrom: new Date(ivFrom), interval: iv });
     }
   }
   return out;

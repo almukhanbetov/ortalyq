@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson, Teacher } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
-import { useLessonsRefresh } from "@/lib/hooks";
+import { useLessonsRefresh, useNow } from "@/lib/hooks";
+import { isUpcoming } from "@/lib/lessonTime";
 import { formatDate } from "@/lib/format";
 import { canEnter, LessonCard } from "@/components/LessonCard";
 import { Empty, ErrorBox, Loading, Notice, PageHeader, Skeleton } from "@/components/ui";
@@ -58,11 +59,14 @@ export default function Dashboard() {
     load();
   }, [load]);
   useLessonsRefresh(() => load(true));
+  const now = useNow(15000);
 
   if (!ready || !user) return <Loading />;
   if (user.role === "admin") return <AdminDashboard />;
 
-  const openNow = lessons?.find((l) => canEnter(l, config?.joinEarlyMinutes ?? 15));
+  // Закончившийся урок сразу уходит из предстоящих (граница — момент окончания)
+  const upcoming = lessons?.filter((l) => isUpcoming(l, now)) ?? null;
+  const openNow = upcoming?.find((l) => canEnter(l, config?.joinEarlyMinutes ?? 15, now));
   const isTeacher = user.role === "teacher";
   const hwTodo = (homework ?? []).filter((h) => (isTeacher ? h.status === "submitted" : h.status === "assigned"));
 
@@ -121,9 +125,9 @@ export default function Dashboard() {
               Все и история →
             </Link>
           </div>
-          {lessons === null ? (
+          {upcoming === null ? (
             <Skeleton className="h-28" />
-          ) : lessons.length === 0 ? (
+          ) : upcoming.length === 0 ? (
             <Empty
               icon="🗓️"
               title="Запланированных занятий нет"
@@ -132,7 +136,7 @@ export default function Dashboard() {
             />
           ) : (
             <div className="space-y-3">
-              {lessons.map((l) => (
+              {upcoming.map((l) => (
                 <LessonCard key={l.id} lesson={l} highlight={l.id === openNow?.id} />
               ))}
             </div>

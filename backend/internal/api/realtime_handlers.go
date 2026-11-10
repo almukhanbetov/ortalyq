@@ -59,12 +59,8 @@ func (s *Server) lessonWS(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if l.Status == "cancelled" {
-		fail(c, 409, "Занятие отменено")
-		return
-	}
-	if l.Status == "completed" {
-		fail(c, 409, "Занятие завершено")
+	if msg := s.classProblem(l, time.Now()); msg != "" {
+		fail(c, 409, msg)
 		return
 	}
 	if origin := c.GetHeader("Origin"); origin != "" && !s.originAllowed(origin, c.Request.Host) {

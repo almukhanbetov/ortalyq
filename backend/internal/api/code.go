@@ -133,8 +133,8 @@ func (s *Server) createCodeRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if l.Status == "cancelled" || l.Status == "completed" {
-		fail(c, 409, "Занятие завершено — запуск кода недоступен")
+	if msg := s.classProblem(l, time.Now()); msg != "" {
+		fail(c, 409, "Запуск кода недоступен: "+msg)
 		return
 	}
 	if s.runner == nil {

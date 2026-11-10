@@ -3,25 +3,22 @@
 import Link from "next/link";
 import { Lesson } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { formatRange, relativeStart } from "@/lib/format";
+import { formatRange, formatTime } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
+import { canEnter, isUpcoming, lessonPhase, lessonTiming } from "@/lib/lessonTime";
 import { Avatar, DemoBadge, StatusBadge } from "./ui";
 
-export function canEnter(l: Lesson, earlyMin = 15, lateMin = 60, now = Date.now()) {
-  if (l.status !== "scheduled" && l.status !== "live") return false;
-  if (l.alwaysOpen) return true;
-  const opens = new Date(l.startsAt).getTime() - earlyMin * 60000;
-  const closes = new Date(l.endsAt).getTime() + lateMin * 60000;
-  return now >= opens && now <= closes;
-}
+export { canEnter };
 
 export function LessonCard({ lesson, highlight }: { lesson: Lesson; highlight?: boolean }) {
   const { user, tz, config } = useAuth();
   const now = useNow(15000);
   const other = user?.id === lesson.teacherId ? lesson.studentName : lesson.teacherName;
   const otherLabel = user?.id === lesson.teacherId ? "Ученик" : "Преподаватель";
-  const enter = canEnter(lesson, config?.joinEarlyMinutes ?? 15, 60, now);
-  const upcoming = lesson.status === "scheduled" || lesson.status === "live";
+  const early = config?.joinEarlyMinutes ?? 15;
+  const enter = canEnter(lesson, early, now);
+  const upcoming = isUpcoming(lesson, now);
+  const phase = lessonPhase(lesson, now);
 
   return (
     <div
@@ -39,7 +36,7 @@ export function LessonCard({ lesson, highlight }: { lesson: Lesson; highlight?: 
           <Link href={`/lessons/${lesson.id}`} className="font-semibold hover:text-brand-700">
             {lesson.subject}
           </Link>
-          <StatusBadge status={lesson.status} />
+          <StatusBadge status={phase} />
           {lesson.isDemo && <DemoBadge />}
           {lesson.alwaysOpen && upcoming && <span className="chip bg-emerald-100 text-emerald-800">Класс открыт</span>}
         </div>
@@ -48,7 +45,7 @@ export function LessonCard({ lesson, highlight }: { lesson: Lesson; highlight?: 
         </div>
         <div className="mt-0.5 text-sm">
           {lesson.alwaysOpen ? "Вход в любое время — без ожидания начала" : formatRange(lesson.startsAt, lesson.endsAt, tz)}
-          {upcoming && !lesson.alwaysOpen && <span className="text-muted"> · {relativeStart(lesson.startsAt)}</span>}
+          {!lesson.alwaysOpen && lessonTiming(lesson, now) && <span className="text-muted"> · {lessonTiming(lesson, now)}</span>}
         </div>
         {lesson.note && <div className="mt-1 line-clamp-1 text-xs text-muted">«{lesson.note}»</div>}
       </div>
@@ -59,8 +56,8 @@ export function LessonCard({ lesson, highlight }: { lesson: Lesson; highlight?: 
               🎥 Войти в класс
             </Link>
           ) : (
-            <button className="btn-primary px-5 py-3" disabled title={`Вход откроется за ${config?.joinEarlyMinutes ?? 15} минут до начала`}>
-              Вход за {config?.joinEarlyMinutes ?? 15} мин до начала
+            <button className="btn-primary px-5 py-3" disabled title={`Вход откроется за ${early} минут до начала`}>
+              Вход с {formatTime(new Date(Date.parse(lesson.startsAt) - early * 60000).toISOString(), tz)}
             </button>
           ))}
         <Link href={`/lessons/${lesson.id}`} className="btn-secondary py-3">

@@ -36,8 +36,7 @@ type Config struct {
 	S3UseSSL    bool
 
 	MaxUploadMB      int
-	JoinEarlyMinutes int
-	JoinLateMinutes  int
+	JoinEarlyMinutes int // вход в класс открывается за столько минут до начала; закрывается в момент окончания
 
 	// Исполнитель кода (Judge0 CE на отдельном изолированном сервере). Пустой URL — запуск недоступен.
 	CodeRunnerURL        string // например https://runner.internal:2358 (доступен только бэкенду)
@@ -118,7 +117,6 @@ func Load() (*Config, error) {
 		S3UseSSL:              envBool("S3_USE_SSL", false),
 		MaxUploadMB:           envInt("MAX_UPLOAD_MB", 20),
 		JoinEarlyMinutes:      envInt("JOIN_EARLY_MINUTES", 15),
-		JoinLateMinutes:       envInt("JOIN_LATE_MINUTES", 60),
 		CodeRunnerURL:         strings.TrimRight(env("CODE_RUNNER_URL", ""), "/"),
 		CodeRunnerToken:       env("CODE_RUNNER_TOKEN", ""),
 		CodeRunnerAuthHeader:  env("CODE_RUNNER_AUTH_HEADER", "X-Auth-Token"),

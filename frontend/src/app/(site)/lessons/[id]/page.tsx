@@ -14,9 +14,9 @@ import {
   formatSize,
   formatTime,
   recordingLabels,
-  relativeStart,
   tzLabel,
 } from "@/lib/format";
+import { isUpcoming, lessonPhase, lessonTiming } from "@/lib/lessonTime";
 import { Board, exportBoardPng } from "@/components/board";
 import { openSignedLink, RecordingBadge } from "@/components/lessonShared";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, ErrorBox, Loading, Notice, Spinner, StatusBadge, Stars, toast } from "@/components/ui";
@@ -66,7 +66,11 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
   const isTeacher = myRole === "teacher";
   const opensAt = new Date(data.joinOpensAt).getTime();
   const closesAt = new Date(data.joinClosesAt).getTime();
-  const canJoin = (l.status === "scheduled" || l.status === "live") && now >= opensAt && now <= closesAt;
+  // Окно входа [за 15 мин до начала, окончание) приходит с сервера; сервер повторно проверяет его при входе.
+  const phase = lessonPhase(l, now);
+  const active = isUpcoming(l, now);
+  const canJoin = active && now >= opensAt && now < closesAt;
+  const timing = lessonTiming(l, now);
 
   const cancel = async () => {
     setBusy(true);
@@ -91,19 +95,19 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold">{l.subject}</h1>
-              <StatusBadge status={l.status} />
+              <StatusBadge status={phase} />
               {l.isDemo && <DemoBadge />}
             </div>
             <p className="mt-1 text-sm">
               {formatRange(l.startsAt, l.endsAt, tz)}
-              {(l.status === "scheduled" || l.status === "live") && <span className="text-muted"> · {relativeStart(l.startsAt)}</span>}
+              {timing && <span className="text-muted" data-testid="lesson-timing"> · {timing}</span>}
             </p>
             <p className="text-xs text-muted">Часовой пояс: {tzLabel(tz)}</p>
             {l.note && <p className="mt-3 rounded-xl bg-canvas px-3 py-2 text-sm text-ink/80">«{l.note}»</p>}
             {l.status === "cancelled" && l.cancelReason && <p className="mt-2 text-sm text-red-700">Причина: {l.cancelReason}</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(l.status === "scheduled" || l.status === "live") &&
+            {active &&
               (canJoin ? (
                 <Link href={`/lessons/${id}/room`} className="btn-primary px-6 py-3">
                   🎥 Войти в класс
@@ -115,6 +119,11 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
                   </button>
                 )
               ))}
+            {phase === "ended" && (
+              <span className="self-center text-sm text-muted" data-testid="join-closed">
+                Вход в класс закрыт: занятие закончилось в {formatTime(l.endsAt, tz)}
+              </span>
+            )}
             {l.status === "scheduled" && (l.alwaysOpen || now < new Date(l.startsAt).getTime()) && (
               <button className="btn-secondary" onClick={() => setCancelOpen(true)}>
                 Отменить
@@ -131,7 +140,7 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
             <div className="text-xs text-muted">Оплата не подключена (MVP)</div>
           </div>
         </div>
-        {config && !config.videoConfigured && (l.status === "scheduled" || l.status === "live") && (
+        {config && !config.videoConfigured && active && (
           <div className="mt-4">
             <Notice tone="warn">Видеосвязь не настроена на сервере — вход в класс будет недоступен.</Notice>
           </div>

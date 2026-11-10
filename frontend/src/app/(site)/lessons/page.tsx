@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
-import { useLessonsRefresh } from "@/lib/hooks";
+import { useLessonsRefresh, useNow } from "@/lib/hooks";
+import { isUpcoming } from "@/lib/lessonTime";
 import { formatDate, plural, tzLabel } from "@/lib/format";
 import { LessonCard } from "@/components/LessonCard";
 import { Empty, ErrorBox, Loading, PageHeader, Skeleton } from "@/components/ui";
@@ -51,6 +52,9 @@ export default function LessonsPage() {
     if (ready) load();
   }, [ready, load]);
   useLessonsRefresh(() => ready && load(true));
+  // Урок уходит из «Предстоящих» ровно в момент окончания, не дожидаясь следующего обновления с сервера.
+  const now = useNow(15000);
+  const shown = lessons && tab === "upcoming" ? lessons.filter((l) => isUpcoming(l, now)) : lessons;
 
   if (!ready || !user) return <Loading />;
   const tabs: [Tab, string][] = [
@@ -92,12 +96,12 @@ export default function LessonsPage() {
             ))}
           </div>
         )
-      ) : lessons === null ? (
+      ) : shown === null ? (
         <div className="space-y-3">
           <Skeleton className="h-28" />
           <Skeleton className="h-28" />
         </div>
-      ) : lessons.length === 0 ? (
+      ) : shown.length === 0 ? (
         <Empty
           icon={tab === "upcoming" ? "🗓️" : "📚"}
           title={tab === "upcoming" ? "Нет предстоящих занятий" : "История пока пуста"}
@@ -106,7 +110,7 @@ export default function LessonsPage() {
         />
       ) : (
         <div className="space-y-3">
-          {lessons.map((l) => (
+          {shown.map((l) => (
             <LessonCard key={l.id} lesson={l} />
           ))}
         </div>

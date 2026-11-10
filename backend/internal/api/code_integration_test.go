@@ -77,18 +77,20 @@ func setupCode(t *testing.T) *tenv {
 		}
 		ids[u.key], e.cookies[u.key] = id, raw
 	}
-	base := time.Now().Add(time.Duration(time.Now().UnixNano()%1000000) * time.Hour)
-	mk := func(student string, off time.Duration) string {
+	// Оба урока сейчас открыты для входа (класс доступен с JoinEarlyMinutes до начала и до окончания):
+	// A идёт [−10 мин, +10 мин), B начинается через 10 минут — вход уже открыт. Время у преподавателя не пересекается.
+	base := time.Now().Truncate(time.Minute)
+	mk := func(student string, from, to time.Duration) string {
 		var id string
 		if err := pool.QueryRow(ctx, `INSERT INTO lessons(teacher_id, student_id, subject, starts_at, ends_at, status)
-			VALUES ($1,$2,'Информатика',$3,$4,'live') RETURNING id`, ids["teacher"], ids[student], base.Add(off), base.Add(off+time.Hour)).Scan(&id); err != nil {
+			VALUES ($1,$2,'Информатика',$3,$4,'live') RETURNING id`, ids["teacher"], ids[student], base.Add(from), base.Add(to)).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
-	e.lessonA, e.lessonB = mk("student", 0), mk("outsider", 2*time.Hour)
+	e.lessonA, e.lessonB = mk("student", -10*time.Minute, 10*time.Minute), mk("outsider", 10*time.Minute, 70*time.Minute)
 
-	cfg := &config.Config{AppSecret: strings.Repeat("s", 32), PublicOrigins: []string{"http://test.local"}, CodeRunCPUSeconds: 2,
+	cfg := &config.Config{AppSecret: strings.Repeat("s", 32), PublicOrigins: []string{"http://test.local"}, JoinEarlyMinutes: 15, CodeRunCPUSeconds: 2,
 		CodeRunWallSeconds: 5, CodeRunMemoryMB: 128, CodeRunMaxConcurrent: 4, CodeRunnerPythonID: 71}
 	e.srv = New(cfg, pool, nil, nil)
 	hctx, cancel := context.WithCancel(ctx)

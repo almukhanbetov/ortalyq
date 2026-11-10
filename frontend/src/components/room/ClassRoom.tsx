@@ -20,6 +20,8 @@ import { ConnectionState, MediaDeviceFailure, Participant, ParticipantKind, Trac
 import { api, errorMessage, LessonDetail, Recording } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { formatTime } from "@/lib/format";
+import { useNow } from "@/lib/hooks";
+import { lessonTiming } from "@/lib/lessonTime";
 import { useLessonRealtime } from "@/lib/lessonSocket";
 import { Board } from "../board";
 import { CodePanel } from "../code";
@@ -372,7 +374,8 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted">
             <span className={`h-2 w-2 rounded-full ${bothHere ? "bg-emerald-500" : "bg-amber-400"}`} aria-hidden />
-            {lesson.alwaysOpen ? "демо-класс, открыт всегда" : `${formatTime(lesson.startsAt, tz)}–${formatTime(lesson.endsAt, tz)}`} ·{" "}
+            {lesson.alwaysOpen ? "демо-класс, открыт всегда" : `${formatTime(lesson.startsAt, tz)}–${formatTime(lesson.endsAt, tz)}`}
+            <TimeLeft lesson={lesson} /> ·{" "}
             {bothHere ? "оба участника в классе" : `ожидаем: ${otherName}`}
           </div>
         </div>
@@ -688,4 +691,11 @@ function Chat({ rt }: { rt: ReturnType<typeof useLessonRealtime> }) {
       </form>
     </div>
   );
+}
+
+/** «· осталось 55 минут» — до окончания урока по расписанию (опоздание урок не продлевает). Свой таймер, чтобы не перерисовывать класс. */
+function TimeLeft({ lesson }: { lesson: LessonDetail["lesson"] }) {
+  const now = useNow(15000);
+  const t = lessonTiming(lesson, now);
+  return t ? <span data-testid="class-time-left"> · {t}</span> : null;
 }

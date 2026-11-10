@@ -144,21 +144,10 @@ export function plural(n: number, one: string, few: string, many: string) {
   return many;
 }
 
-export function relativeStart(iso: string): string {
-  const diff = new Date(iso).getTime() - Date.now();
-  const min = Math.round(diff / 60000);
-  if (min <= 0 && min > -60) return "уже идёт";
-  if (min <= -60) return "прошло";
-  if (min < 60) return `через ${min} ${plural(min, "минуту", "минуты", "минут")}`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `через ${h} ${plural(h, "час", "часа", "часов")}`;
-  const d = Math.round(h / 24);
-  return `через ${d} ${plural(d, "день", "дня", "дней")}`;
-}
-
 export const statusLabels: Record<string, string> = {
   scheduled: "Запланировано",
-  live: "Идёт",
+  live: "Идёт занятие",
+  ended: "Завершено", // время урока прошло, сервер ещё не закрыл его (до 30 с)
   completed: "Завершено",
   cancelled: "Отменено",
 };
@@ -166,6 +155,7 @@ export const statusLabels: Record<string, string> = {
 export const statusColors: Record<string, string> = {
   scheduled: "bg-brand-100 text-brand-800",
   live: "bg-emerald-100 text-emerald-800",
+  ended: "bg-slate-100 text-slate-700",
   completed: "bg-slate-100 text-slate-700",
   cancelled: "bg-red-50 text-red-700",
 };

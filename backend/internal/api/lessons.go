@@ -261,16 +261,22 @@ func (s *Server) myLessons(c *gin.Context) {
 		return
 	}
 	q := lessonSelect + " WHERE " + where
+	// Граница «предстоящие / история» — момент окончания урока ($2, абсолютное время):
+	// урок 17:20–18:20 остаётся в предстоящих (в том числе идущий) до 18:20 и переходит в историю ровно в 18:20.
+	// Постоянно открытые демо-уроки не стареют.
+	args := []any{u.ID}
 	switch c.Query("scope") {
 	case "upcoming":
-		q += " AND l.status IN ('scheduled','live') AND (l.always_open OR l.ends_at > now() - interval '2 hours') ORDER BY l.always_open DESC, l.starts_at ASC"
+		q += " AND l.status IN ('scheduled','live') AND (l.always_open OR l.ends_at > $2) ORDER BY l.always_open DESC, l.starts_at ASC"
+		args = append(args, time.Now())
 	case "history":
-		q += " AND (l.status IN ('completed','cancelled') OR (NOT l.always_open AND l.ends_at <= now() - interval '2 hours')) ORDER BY l.starts_at DESC"
+		q += " AND (l.status IN ('completed','cancelled') OR (NOT l.always_open AND l.ends_at <= $2)) ORDER BY l.starts_at DESC"
+		args = append(args, time.Now())
 	default:
 		q += " ORDER BY l.starts_at DESC"
 	}
 	q += " LIMIT 200"
-	rows, err := s.db.Query(c, q, u.ID)
+	rows, err := s.db.Query(c, q, args...)
 	if err != nil {
 		internal(c, err)
 		return
@@ -340,12 +346,37 @@ func (s *Server) lessonAccess(c *gin.Context) (*lessonRow, string, bool) {
 	return nil, "", false
 }
 
+// joinWindow — полуинтервал [opens, closes), в котором открыт вход в класс:
+// за JoinEarlyMinutes до начала и до момента окончания урока. Опоздание не сдвигает и не продлевает урок:
+// ученик, вошедший в 17:25 на урок 17:20–18:20, занимается до 18:20.
 func (s *Server) joinWindow(l *lessonRow) (time.Time, time.Time) {
 	if l.AlwaysOpen {
 		// Демо-класс открыт всегда
 		return time.Now().Add(-24 * time.Hour), time.Now().Add(24 * time.Hour)
 	}
-	return l.StartsAt.Add(-time.Duration(s.cfg.JoinEarlyMinutes) * time.Minute), l.EndsAt.Add(time.Duration(s.cfg.JoinLateMinutes) * time.Minute)
+	return l.StartsAt.Add(-time.Duration(s.cfg.JoinEarlyMinutes) * time.Minute), l.EndsAt
+}
+
+// classProblem объясняет, почему в класс занятия сейчас войти нельзя; "" — можно.
+// Единая серверная проверка для видеосвязи, WebSocket класса (доска, чат, код) и запуска кода.
+func (s *Server) classProblem(l *lessonRow, now time.Time) string {
+	switch l.Status {
+	case "cancelled":
+		return "Занятие отменено — вход в класс закрыт"
+	case "completed":
+		return "Занятие завершено — вход в класс закрыт"
+	}
+	if l.AlwaysOpen {
+		return "" // демо-класс открыт в любое время
+	}
+	opens, closes := s.joinWindow(l)
+	if now.Before(opens) {
+		return "Вход в класс откроется за " + itoa(s.cfg.JoinEarlyMinutes) + " минут до начала"
+	}
+	if !now.Before(closes) {
+		return "Время занятия истекло — вход в класс закрыт"
+	}
+	return ""
 }
 
 func (s *Server) getLesson(c *gin.Context) {
@@ -355,8 +386,7 @@ func (s *Server) getLesson(c *gin.Context) {
 	}
 	s.refreshActiveRecordings(c, l.ID)
 	opens, closes := s.joinWindow(l)
-	now := time.Now()
-	canJoin := (l.Status == "scheduled" || l.Status == "live") && now.After(opens) && now.Before(closes)
+	canJoin := s.classProblem(l, time.Now()) == ""
 
 	materials, err := s.lessonMaterials(c, l.ID)
 	if err != nil {
@@ -444,20 +474,11 @@ func (s *Server) joinLesson(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if l.Status == "cancelled" || l.Status == "completed" {
-		fail(c, 409, "Занятие уже "+map[string]string{"cancelled": "отменено", "completed": "завершено"}[l.Status])
+	if msg := s.classProblem(l, time.Now()); msg != "" {
+		fail(c, 409, msg)
 		return
 	}
-	opens, closes := s.joinWindow(l)
-	now := time.Now()
-	if now.Before(opens) {
-		fail(c, 409, "Вход в класс откроется за "+itoa(s.cfg.JoinEarlyMinutes)+" минут до начала")
-		return
-	}
-	if now.After(closes) {
-		fail(c, 409, "Время занятия истекло")
-		return
-	}
+	_, closes := s.joinWindow(l)
 	if s.lk == nil {
 		fail(c, 503, "Видеосвязь не настроена: задайте LIVEKIT_URL, LIVEKIT_API_KEY и LIVEKIT_API_SECRET")
 		return

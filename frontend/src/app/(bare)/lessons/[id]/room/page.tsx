@@ -5,6 +5,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { api, errorMessage, LessonDetail } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
 import { formatTime } from "@/lib/format";
+import { lessonTiming } from "@/lib/lessonTime";
 import { ClassRoom, JoinInfo } from "@/components/room/ClassRoom";
 import { DeviceChoice, PreJoin } from "@/components/room/PreJoin";
 import { Loading } from "@/components/ui";
@@ -75,8 +76,18 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const l = detail.lesson;
   if (l.status === "completed" || l.status === "cancelled")
     return <Message title={l.status === "completed" ? "Занятие завершено" : "Занятие отменено"} text="Материалы, доска и записи доступны на странице занятия." lessonId={id} />;
-  if (!detail.canJoin)
+  if (!detail.canJoin) {
+    // Опоздание не продлевает урок: после окончания обычный вход закрыт.
+    if (!l.alwaysOpen && Date.now() >= Date.parse(l.endsAt))
+      return (
+        <Message
+          title="Время занятия истекло"
+          text={`Занятие закончилось в ${formatTime(l.endsAt, tz)} — вход в класс закрыт. Материалы, доска и записи доступны на странице занятия.`}
+          lessonId={id}
+        />
+      );
     return <Message title="Класс ещё закрыт" text={`Вход откроется в ${formatTime(detail.joinOpensAt, tz)}.`} lessonId={id} />;
+  }
   if (!config) return <Loading label="Загружаем настройки…" />;
   // Без LiveKit всё равно открываем класс (доска и чат работают), видео честно помечено как недоступное.
   if (!config.videoConfigured)
@@ -95,7 +106,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     return (
       <PreJoin
         title={`${l.subject} · ${other}`}
-        subtitle={`${formatTime(l.startsAt, tz)}–${formatTime(l.endsAt, tz)}`}
+        subtitle={`${formatTime(l.startsAt, tz)}–${formatTime(l.endsAt, tz)}${lessonTiming(l) ? ` · ${lessonTiming(l)}` : ""}`}
         onJoin={onJoin}
         joining={joining}
         joinError={joinError}

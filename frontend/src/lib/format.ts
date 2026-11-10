@@ -98,10 +98,8 @@ export function addDaysIso(day: string, n: number): string {
 }
 
 /** Сегодняшняя дата YYYY-MM-DD в часовом поясе пользователя. */
-export function todayIn(tz: string, addDays = 0): string {
-  const d = new Date(Date.now() + addDays * 86400000);
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
-  return parts;
+export function todayIn(tz: string): string {
+  return isoDayIn(new Date(), tz);
 }
 
 /** Сумма в тенге (целые ₸): 5 000 ₸, 10 000 ₸. Разделитель тысяч — неразрывный пробел, в том числе для 4-значных сумм. */

@@ -7,7 +7,7 @@
 // окна доступности на фиксированное время в днях относительно «сегодня» по Алматы. У новых аккаунтов
 // нет занятий, поэтому нужное время гарантированно свободно. Демо-данные не изменяются, но созданные
 // аккаунты остаются в базе — запускайте на тестовом или локальном стенде, не на рабочем.
-// Регистрация ограничена 20 попытками в час с одного IP; один запуск использует 4.
+// Регистрация ограничена 20 попытками в час с одного IP; один запуск использует 5.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -244,6 +244,64 @@ await step("другой часовой пояс (Europe/Moscow): интерва
     expect(msk[0]?.freeFrom === "08:00" && msk[0]?.freeTo === "12:00" && msk[0]?.to === "11:00", `ожидалось 08:00–12:00: ${JSON.stringify(msk)}`);
   } finally {
     await api(s.ctx, "PATCH", "/api/me", { timezone: TZ });
+  }
+});
+
+// Регрессия: форма преподавателя подставляла завтрашнюю дату, и интервал «на сегодня» сохранялся на завтра —
+// у ученика его не было на сегодня, зато он появлялся на следующий день.
+// Аналог «сейчас 19:20 — преподаватель добавляет 19:30–20:30 на сегодня»: интервал через 10 минут после текущей.
+await step("интервал на сегодня из формы преподавателя: дата по умолчанию — сегодня, ученик записывается на 60 мин, урок виден обоим", async () => {
+  const nowHm = partsIn(new Date(), TZ).hm;
+  const from = fromMin(toMin(nowHm) + 10), to = fromMin(toMin(nowHm) + 70);
+  if (toMin(nowHm) + 70 >= 24 * 60) {
+    console.log("   (пропуск: до конца суток по Алматы меньше 70 минут)");
+    return;
+  }
+  const t3 = await register("t3", "teacher");
+  try {
+    await api(t3.ctx, "PUT", "/api/me/profile", { headline: "E2E-преподаватель", bio: "Создан автотестом записи.", subjects: [SUBJECT], price: 6000, experienceYears: 1 });
+    const tp = await t3.ctx.newPage();
+    await tp.goto(`${BASE}/availability`);
+    await tp.waitForFunction(() => document.querySelector("#date")?.value);
+    const def = await tp.inputValue("#date");
+    expect(def === TODAY, `дата по умолчанию ${def}, ожидалась сегодняшняя ${TODAY}`);
+    // Дату не меняем — как пользователь, который добавляет время на сегодня
+    await tp.fill("#from", from);
+    await tp.fill("#to", to);
+    const [post] = await Promise.all([
+      tp.waitForResponse((r) => r.url().endsWith("/api/my/availability") && r.request().method() === "POST"),
+      tp.getByTestId("add-window").click(),
+    ]);
+    expect(post.status() === 201, `добавление: ${post.status()} ${await post.text()}`);
+    const sent = post.request().postDataJSON();
+    expect(sent.startsAt === zoned(TODAY, from, TZ).toISOString(), `отправлено ${sent.startsAt}, ожидалось ${TODAY} ${from} (${TZ})`);
+
+    // До записи интервал не появляется в «Моих занятиях» преподавателя
+    const before = await (await api(t3.ctx, "GET", "/api/lessons?scope=upcoming")).json();
+    expect(before.lessons.length === 0, `свободный интервал не должен быть занятием: ${JSON.stringify(before.lessons)}`);
+
+    await openTeacher(t3);
+    const r = await pickDay(TODAY);
+    expect(r.length === 1 && r[0].freeFrom === from && r[0].freeTo === to && r[0].from === from && r[0].to === from, `сегодня ожидалось ${from}–${to}: ${JSON.stringify(r)}`);
+    await setTime(from);
+    const st = await status();
+    expect(st.includes("время свободно"), st);
+    await bookBtn().click();
+    await s.page.getByRole("dialog").getByRole("button", { name: "Записаться" }).click();
+    await s.page.waitForURL(/\/lessons\/[0-9a-f-]{36}$/, { timeout: 15000 });
+    await s.page.locator("main").getByText(new RegExp(`${from}\\s*–\\s*${to}`)).first().waitFor({ timeout: 10000 });
+
+    const startIso = zoned(TODAY, from, TZ).getTime();
+    for (const [who, ctx] of [["ученик", s.ctx], ["преподаватель", t3.ctx]]) {
+      const { lessons } = await (await api(ctx, "GET", "/api/lessons?scope=upcoming")).json();
+      const l = lessons.find((x) => x.teacherId === t3.id);
+      expect(l && Date.parse(l.startsAt) === startIso && Date.parse(l.endsAt) === startIso + 60 * minute, `${who}: нет урока ${from}–${to} в предстоящих: ${JSON.stringify(lessons.map((x) => [x.startsAt, x.endsAt]))}`);
+      const page = ctx === s.ctx ? s.page : tp;
+      await page.goto(`${BASE}/lessons`);
+      await page.locator("main").getByText(new RegExp(`${from}\\s*–\\s*${to}`)).first().waitFor({ timeout: 10000 });
+    }
+  } finally {
+    await t3.ctx.close();
   }
 });
 

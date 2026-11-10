@@ -27,8 +27,10 @@ export default function AvailabilityPage() {
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState<Window | null>(null);
 
+  // По умолчанию — сегодня в часовом поясе пользователя (не завтра): интервал на сегодня
+  // доступен ученикам, уже прошедшая часть отсекается при расчёте свободного времени.
   useEffect(() => {
-    if (ready && !date) setDate(todayIn(tz, 1));
+    if (ready && !date) setDate(todayIn(tz));
   }, [ready, tz, date]);
 
   const load = useCallback(async () => {

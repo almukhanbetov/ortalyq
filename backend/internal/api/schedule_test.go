@@ -65,3 +65,30 @@ func TestFreeIntervalsBusyAdjacentAndNow(t *testing.T) {
 		t.Fatalf("остаток 30 мин для урока 60 мин: %+v", got)
 	}
 }
+
+// Интервал на сегодня не исключается целиком: отсекается только прошедшее время.
+// Сейчас 10.11.2026 19:20 (Алматы), преподаватель доступен сегодня и завтра 19:30–20:30.
+func TestFreeIntervalsTodayLikeTomorrow(t *testing.T) {
+	today := time.Date(2026, 11, 10, 0, 0, 0, 0, almaty)
+	tomorrow := today.AddDate(0, 0, 1)
+	now := at(today, "19:20")
+	avail := []span{{at(today, "19:30"), at(today, "20:30")}, {at(tomorrow, "19:30"), at(tomorrow, "20:30")}}
+	got := freeIntervals(avail, nil, now, 60*time.Minute)
+	if len(got) != 2 {
+		t.Fatalf("ожидались интервалы на сегодня и завтра: %+v", got)
+	}
+	for i, day := range []time.Time{today, tomorrow} {
+		if !got[i].StartsAt.Equal(at(day, "19:30")) || !got[i].EndsAt.Equal(at(day, "20:30")) || !got[i].LastStartAt.Equal(at(day, "19:30")) {
+			t.Errorf("%s: %+v", dm(day, almaty), got[i])
+		}
+	}
+	// Урок 60 мин в 19:30 сегодня целиком входит в доступность.
+	if msg := availabilityProblem(avail, at(today, "19:30"), at(today, "20:30"), almaty); msg != "" {
+		t.Errorf("19:30–20:30 сегодня: %s", msg)
+	}
+	// Интервал, начавшийся в прошлом (19:00–20:30), остаётся с первой будущей минуты 19:21.
+	got = freeIntervals([]span{{at(today, "19:00"), at(today, "20:30")}}, nil, now, 60*time.Minute)
+	if len(got) != 1 || !got[0].StartsAt.Equal(at(today, "19:21")) || !got[0].LastStartAt.Equal(at(today, "19:30")) {
+		t.Errorf("19:00–20:30 в 19:20: %+v", got)
+	}
+}

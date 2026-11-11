@@ -10,6 +10,7 @@ import { serverNow } from "@/lib/serverClock";
 import { ClassRoom, JoinInfo } from "@/components/room/ClassRoom";
 import { DeviceChoice, PreJoin } from "@/components/room/PreJoin";
 import { Loading } from "@/components/ui";
+import { LessonCheckButton } from "@/components/LessonCheck";
 
 function Message({ title, text, lessonId }: { title: string; text: string; lessonId: string }) {
   return (
@@ -17,9 +18,12 @@ function Message({ title, text, lessonId }: { title: string; text: string; lesso
       <div className="card max-w-md p-6 text-center">
         <h1 className="text-lg font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted">{text}</p>
-        <Link href={`/lessons/${lessonId}`} className="btn-primary mt-5">
-          К странице занятия
-        </Link>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <Link href={`/lessons/${lessonId}`} className="btn-primary">
+            К странице занятия
+          </Link>
+          <LessonCheckButton lessonId={lessonId} className="btn-secondary" />
+        </div>
       </div>
     </div>
   );
@@ -111,6 +115,7 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         onJoin={onJoin}
         joining={joining}
         joinError={joinError}
+        joinHelp={joinError ? <LessonCheckButton lessonId={id} className="btn-secondary btn-sm" /> : null}
       />
     );
   }

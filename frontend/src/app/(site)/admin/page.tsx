@@ -5,6 +5,8 @@ import { api, errorMessage, Listing } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
 import { formatDate } from "@/lib/format";
 import { DemoBadge, Empty, ErrorBox, Loading, PageHeader, Skeleton, toast } from "@/components/ui";
+import { AdminLessonDiagnostics } from "@/components/AdminLessonDiagnostics";
+import { AdminDiagnosticReports } from "@/components/AdminDiagnosticReports";
 
 interface AdminUser {
   id: string;
@@ -56,6 +58,8 @@ export default function AdminPage() {
     <div className="space-y-8">
       <PageHeader title="Модерация" subtitle="Скрытые объявления не показываются на доске" />
       {error && <ErrorBox message={error} onRetry={load} />}
+      <AdminDiagnosticReports tz={tz} />
+      <AdminLessonDiagnostics />
       <section>
         <label className="mb-4 inline-flex items-center gap-2 text-sm">
           <input type="checkbox" checked={onlyHidden} onChange={(e) => setOnlyHidden(e.target.checked)} className="h-4 w-4 accent-brand-600" />

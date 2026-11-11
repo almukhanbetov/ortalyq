@@ -8,6 +8,7 @@ import { useLessonsRefresh, useNow } from "@/lib/hooks";
 import { isUpcoming } from "@/lib/lessonTime";
 import { formatDate, plural, tzLabel } from "@/lib/format";
 import { LessonCard } from "@/components/LessonCard";
+import { LessonCheckButton } from "@/components/LessonCheck";
 import { Empty, ErrorBox, Loading, PageHeader, Skeleton } from "@/components/ui";
 
 interface Student {
@@ -23,6 +24,11 @@ type Tab = "upcoming" | "history" | "students";
 export default function LessonsPage() {
   const { user, ready, tz } = useRequireUser(["student", "teacher"]);
   const [tab, setTab] = useState<Tab>("upcoming");
+  // Ссылка «Открыть историю» из проверки: /lessons?tab=history
+  useEffect(() => {
+    const t = new URLSearchParams(location.search).get("tab");
+    if (t === "history" || t === "students") setTab(t);
+  }, []);
   const [lessons, setLessons] = useState<Lesson[] | null>(null);
   const [students, setStudents] = useState<Student[] | null>(null);
   const [error, setError] = useState("");
@@ -65,7 +71,11 @@ export default function LessonsPage() {
 
   return (
     <div>
-      <PageHeader title="Мои занятия" subtitle={`Вход в виртуальный класс, расписание и история уроков · время указано в часовом поясе ${tzLabel(tz)}`} />
+      <PageHeader
+        title="Мои занятия"
+        subtitle={`Вход в виртуальный класс, расписание и история уроков · время указано в часовом поясе ${tzLabel(tz)}`}
+        action={<LessonCheckButton className="btn-secondary" />}
+      />
       <div className="mb-6 inline-flex rounded-xl border border-line bg-white p-1">
         {tabs.map(([t, label]) => (
           <button

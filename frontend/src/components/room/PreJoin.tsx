@@ -35,12 +35,15 @@ export function PreJoin({
   onJoin,
   joining,
   joinError,
+  joinHelp,
 }: {
   title: string;
   subtitle: string;
   onJoin: (c: DeviceChoice) => void;
   joining: boolean;
   joinError: string;
+  /** Помощь при ошибке входа (кнопка «Не вижу урок / Не могу войти») */
+  joinHelp?: React.ReactNode;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -227,6 +230,7 @@ export function PreJoin({
         {joinError && (
           <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
             {joinError}
+            {joinHelp && <div className="mt-2">{joinHelp}</div>}
           </div>
         )}
         <button className="btn-primary w-full py-3" onClick={join} disabled={joining || checking}>

@@ -17,24 +17,58 @@ import (
 
 // ---- Доступность преподавателя ----
 
+// myAvailability — расписание преподавателя: интервалы доступности, уже занятые занятиями интервалы
+// и рассчитанное свободное время (доступность минус занятия, с текущего момента).
 func (s *Server) myAvailability(c *gin.Context) {
-	rows, err := s.db.Query(c, `SELECT id, starts_at, ends_at FROM availability WHERE teacher_id=$1 AND ends_at > now() ORDER BY starts_at`, currentUser(c).ID)
+	teacherID := currentUser(c).ID
+	now := time.Now()
+	rows, err := s.db.Query(c, `SELECT id, starts_at, ends_at FROM availability WHERE teacher_id=$1 AND ends_at > $2 ORDER BY starts_at`, teacherID, now)
 	if err != nil {
 		internal(c, err)
 		return
 	}
-	defer rows.Close()
 	out := []gin.H{}
+	var avail []span
 	for rows.Next() {
 		var id string
 		var a, b time.Time
 		if err := rows.Scan(&id, &a, &b); err != nil {
+			rows.Close()
 			internal(c, err)
 			return
 		}
 		out = append(out, gin.H{"id": id, "startsAt": a, "endsAt": b})
+		avail = append(avail, span{a, b})
 	}
-	c.JSON(200, gin.H{"availability": out})
+	rows.Close()
+	// Занятые интервалы — те же, что вычитаются при записи (все неотменённые уроки, ещё не закончившиеся).
+	lrows, err := s.db.Query(c, `SELECT l.id, l.starts_at, l.ends_at, l.status, l.subject, st.name, l.always_open FROM lessons l
+		JOIN users st ON st.id = l.student_id
+		WHERE l.teacher_id=$1 AND l.status <> 'cancelled' AND l.ends_at > $2 ORDER BY l.starts_at`, teacherID, now)
+	if err != nil {
+		internal(c, err)
+		return
+	}
+	booked := []gin.H{}
+	var busy []span
+	for lrows.Next() {
+		var id, status, subject, student string
+		var a, b time.Time
+		var open bool
+		if err := lrows.Scan(&id, &a, &b, &status, &subject, &student, &open); err != nil {
+			lrows.Close()
+			internal(c, err)
+			return
+		}
+		booked = append(booked, gin.H{"id": id, "startsAt": a, "endsAt": b, "status": status, "subject": subject, "studentName": student, "alwaysOpen": open})
+		busy = append(busy, span{a, b})
+	}
+	lrows.Close()
+	free := []gin.H{}
+	for _, f := range futureFree(avail, busy, now) {
+		free = append(free, gin.H{"startsAt": f.From, "endsAt": f.To})
+	}
+	c.JSON(200, gin.H{"availability": out, "lessons": booked, "free": free})
 }
 
 func (s *Server) addAvailability(c *gin.Context) {
@@ -267,10 +301,10 @@ func (s *Server) myLessons(c *gin.Context) {
 	args := []any{u.ID}
 	switch c.Query("scope") {
 	case "upcoming":
-		q += " AND l.status IN ('scheduled','live') AND (l.always_open OR l.ends_at > $2) ORDER BY l.always_open DESC, l.starts_at ASC"
+		q += " AND " + lessonScopeCond("upcoming", "$2") + " ORDER BY l.always_open DESC, l.starts_at ASC"
 		args = append(args, time.Now())
 	case "history":
-		q += " AND (l.status IN ('completed','cancelled') OR (NOT l.always_open AND l.ends_at <= $2)) ORDER BY l.starts_at DESC"
+		q += " AND " + lessonScopeCond("history", "$2") + " ORDER BY l.starts_at DESC"
 		args = append(args, time.Now())
 	default:
 		q += " ORDER BY l.starts_at DESC"
@@ -292,6 +326,18 @@ func (s *Server) myLessons(c *gin.Context) {
 		out = append(out, l)
 	}
 	c.JSON(200, gin.H{"lessons": out})
+}
+
+// lessonScopeCond — условие SQL списка «Предстоящие» или «История» (единственное место правила;
+// его используют выдача /api/lessons и диагностика). nowArg — параметр с текущим моментом сервера.
+func lessonScopeCond(scope, nowArg string) string {
+	switch scope {
+	case "upcoming":
+		return "l.status IN ('scheduled','live') AND (l.always_open OR l.ends_at > " + nowArg + ")"
+	case "history":
+		return "(l.status IN ('completed','cancelled') OR (NOT l.always_open AND l.ends_at <= " + nowArg + "))"
+	}
+	return "true"
 }
 
 func (s *Server) myStudents(c *gin.Context) {

@@ -206,6 +206,8 @@ export interface PublicConfig {
   joinEarlyMinutes: number;
   codeRunnerConfigured: boolean;
   workshopAIConfigured?: boolean;
+  /** Версия backend (для диагностики) */
+  version?: string;
 }
 
 export interface ChatMessage {

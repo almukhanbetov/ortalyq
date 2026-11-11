@@ -9,6 +9,7 @@ import { isUpcoming } from "@/lib/lessonTime";
 import { formatDate } from "@/lib/format";
 import { canEnter, LessonCard } from "@/components/LessonCard";
 import { Empty, ErrorBox, Loading, Notice, PageHeader, Skeleton } from "@/components/ui";
+import { LessonCheckButton } from "@/components/LessonCheck";
 
 interface HomeworkItem {
   id: string;
@@ -77,12 +78,16 @@ export default function Dashboard() {
         subtitle={isTeacher ? "Кабинет преподавателя" : "Кабинет ученика"}
         action={
           isTeacher ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Link href="/availability" className="btn-secondary">Расписание</Link>
               <Link href="/profile" className="btn-secondary">Профиль</Link>
+              <LessonCheckButton className="btn-secondary" />
             </div>
           ) : (
-            <Link href="/teachers" className="btn-primary">Найти преподавателя</Link>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/teachers" className="btn-primary">Найти преподавателя</Link>
+              <LessonCheckButton className="btn-secondary" />
+            </div>
           )
         }
       />

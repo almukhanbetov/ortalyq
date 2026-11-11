@@ -218,6 +218,7 @@ func (s *Server) teacherSlots(c *gin.Context) {
 		return
 	}
 	mine := []gin.H{}
+	withTeacher := []gin.H{}
 	if u := currentUser(c); u != nil && u.Role == "student" {
 		own, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled' AND ends_at > $2 AND starts_at < $3`, u.ID, now, horizon.Add(24*time.Hour))
 		if err != nil {
@@ -227,12 +228,68 @@ func (s *Server) teacherSlots(c *gin.Context) {
 		for _, x := range own {
 			mine = append(mine, gin.H{"startsAt": x.From, "endsAt": x.To})
 		}
+		// Предстоящие уроки этого ученика у этого преподавателя — только свои (без данных других учеников),
+		// с теми же условиями, что и «Мои занятия» → «Предстоящие».
+		rows, err := s.db.Query(c, `SELECT id, subject, starts_at, ends_at, status, always_open FROM lessons
+			WHERE student_id=$1 AND teacher_id=$2 AND status IN ('scheduled','live') AND (always_open OR ends_at > $3)
+			ORDER BY always_open DESC, starts_at LIMIT 20`, u.ID, id, now)
+		if err != nil {
+			internal(c, err)
+			return
+		}
+		for rows.Next() {
+			var lid, subject, status string
+			var st, en time.Time
+			var open bool
+			if err := rows.Scan(&lid, &subject, &st, &en, &status, &open); err != nil {
+				rows.Close()
+				internal(c, err)
+				return
+			}
+			withTeacher = append(withTeacher, gin.H{"id": lid, "subject": subject, "startsAt": st, "endsAt": en, "status": status, "alwaysOpen": open})
+		}
+		rows.Close()
+	}
+	d := time.Duration(dur) * time.Minute
+	intervals := freeIntervals(avail, busy, now, d)
+	diag := slotsDiagnosis{Reasons: []string{}}
+	if len(intervals) == 0 {
+		// Дополнительные факты для пояснения: сегодняшние интервалы, которые уже прошли (по дню в поясе профиля),
+		// и ближайший интервал за горизонтом.
+		loc := time.UTC
+		if u := currentUser(c); u != nil {
+			loc = userLocation(u.Timezone)
+		} else {
+			loc = userLocation("")
+		}
+		y, m, dd := now.In(loc).Date()
+		dayStart := time.Date(y, m, dd, 0, 0, 0, 0, loc)
+		var passed int
+		var next *time.Time
+		if err := s.db.QueryRow(c, `SELECT
+			(SELECT count(*) FROM availability WHERE teacher_id=$1 AND ends_at <= $2 AND ends_at > $3),
+			(SELECT min(starts_at) FROM availability WHERE teacher_id=$1 AND starts_at >= $4)`, id, now, dayStart, horizon).Scan(&passed, &next); err != nil {
+			internal(c, err)
+			return
+		}
+		diag = diagnoseSlots(avail, busy, now, d, passed, next)
+	}
+	reason := ""
+	if len(diag.Reasons) > 0 {
+		reason = diag.Reasons[0]
 	}
 	c.JSON(200, gin.H{
 		"duration":      dur,
-		"intervals":     freeIntervals(avail, busy, now, time.Duration(dur)*time.Minute),
+		"intervals":     intervals,
 		"myLessons":     mine,
 		"earliestStart": earliestStart(now),
+		"checkedUntil":  horizon,
+		// Почему пусто: коды из diagnoseSlots (может быть несколько), emptyReason — основной.
+		"emptyReason":          reason,
+		"emptyReasons":         diag.Reasons,
+		"diagnosis":            diag,
+		"maxFreeMinutes":       diag.MaxFreeMinutes,
+		"myLessonsWithTeacher": withTeacher,
 	})
 }
 

@@ -13,6 +13,77 @@ export interface Busy {
   startsAt: string;
   endsAt: string;
 }
+/** Почему нет свободного времени (коды с сервера, их может быть несколько). */
+export type EmptyReason = "" | "no_availability" | "later_only" | "booked" | "too_short" | "today_passed";
+
+/** Предстоящий урок самого ученика у этого преподавателя (только свои данные). */
+export interface OwnLesson {
+  id: string;
+  subject: string;
+  startsAt: string;
+  endsAt: string;
+  status: "scheduled" | "live";
+  alwaysOpen: boolean;
+}
+
+export interface SlotsDiagnosis {
+  reasons: EmptyReason[];
+  maxFreeMinutes: number;
+  windowsChecked: number;
+  bookedWindows: number;
+  shortWindows: number;
+  passedToday: number;
+  nextWindowAt: string | null;
+}
+
+export interface SlotsResponse {
+  intervals: FreeInterval[];
+  myLessons: Busy[];
+  emptyReason?: EmptyReason;
+  emptyReasons?: EmptyReason[];
+  diagnosis?: SlotsDiagnosis;
+  maxFreeMinutes?: number;
+  checkedUntil?: string;
+  myLessonsWithTeacher?: OwnLesson[];
+}
+
+const DURATIONS = [30, 45, 60, 90];
+
+/** Подтверждённые причины пустой выдачи — по строке на причину (без сведений о чужих занятиях). */
+export function emptySlotsReasons(r: SlotsResponse, duration: number, fmtDate: (iso: string) => string): string[] {
+  const d = r.diagnosis;
+  const reasons = r.emptyReasons ?? (r.emptyReason ? [r.emptyReason] : []);
+  const until = r.checkedUntil ? ` (проверено до ${fmtDate(r.checkedUntil)})` : " на ближайшие 3 недели";
+  const out: string[] = [];
+  for (const x of reasons) {
+    switch (x) {
+      case "no_availability":
+        out.push(`Преподаватель не добавил будущие интервалы для записи${until}.`);
+        break;
+      case "later_only":
+        out.push(`В ближайшие 3 недели интервалов нет; ближайший — ${d?.nextWindowAt ? fmtDate(d.nextWindowAt) : "позже"}.`);
+        break;
+      case "too_short": {
+        const max = d?.maxFreeMinutes ?? r.maxFreeMinutes ?? 0;
+        const fit = DURATIONS.filter((v) => v <= max && v < duration);
+        out.push(
+          `Свободные промежутки есть, но самый длинный — ${max} мин, а выбран урок ${duration} мин.` +
+            (fit.length ? ` Подойдёт длительность ${fit.join(" или ")} мин.` : ""),
+        );
+        break;
+      }
+      case "booked":
+        out.push(d && d.bookedWindows > 0 ? `Время в ${d.bookedWindows} из ${d.windowsChecked} интервалов уже полностью занято.` : "Подходящее время уже занято.");
+        break;
+      case "today_passed":
+        out.push("Сегодняшнее доступное время преподавателя уже прошло.");
+        break;
+    }
+  }
+  if (!out.length) out.push(`Нет свободных интервалов для урока ${duration} мин${until}.`);
+  return out;
+}
+
 /** Допустимые начала в пределах одного дня (в часовом поясе пользователя). */
 export interface DayRange {
   from: Date;

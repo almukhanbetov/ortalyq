@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -60,6 +61,9 @@ type Config struct {
 	OpenAIMaxOutputTokens int    // ограничение длины ответа (включая токены рассуждения)
 	WorkshopAIPerMinute   int    // запросов к ИИ в минуту на преподавателя
 	WorkshopAIPerHour     int    // запросов к ИИ в час на урок
+
+	// Версия приложения для диагностики (APP_VERSION; иначе ревизия сборки из Go build info; иначе "dev").
+	AppVersion string
 }
 
 func env(key, def string) string {
@@ -146,6 +150,7 @@ func Load() (*Config, error) {
 		OpenAIMaxOutputTokens: envInt("OPENAI_MAX_OUTPUT_TOKENS", 4000),
 		WorkshopAIPerMinute:   envInt("WORKSHOP_AI_PER_MINUTE", 6),
 		WorkshopAIPerHour:     envInt("WORKSHOP_AI_PER_HOUR", 40),
+		AppVersion:            Version(),
 	}
 	for _, o := range strings.Split(env("PUBLIC_ORIGINS", "http://localhost:13000"), ",") {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -181,6 +186,34 @@ func Load() (*Config, error) {
 	c.WorkshopAIPerMinute = max(min(c.WorkshopAIPerMinute, 60), 1)
 	c.WorkshopAIPerHour = max(min(c.WorkshopAIPerHour, 1000), 1)
 	return c, nil
+}
+
+// buildVersion задаётся при сборке образа: -ldflags "-X ortalyq/backend/internal/config.buildVersion=<SHA>"
+// (Dockerfile, ARG APP_VERSION; в GitHub Actions — SHA коммита релиза).
+var buildVersion = ""
+
+// Version — версия приложения для диагностики: APP_VERSION из окружения, иначе версия из сборки,
+// иначе ревизия VCS из Go build info (локальная сборка из git), иначе "dev".
+func Version() string {
+	if v := env("APP_VERSION", ""); v != "" {
+		return v
+	}
+	if buildVersion != "" && buildVersion != "dev" {
+		return buildVersion
+	}
+	return buildRevision()
+}
+
+// buildRevision — короткая ревизия VCS, встроенная Go при сборке из git; "dev", если её нет.
+func buildRevision() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, st := range bi.Settings {
+			if st.Key == "vcs.revision" && len(st.Value) >= 7 {
+				return st.Value[:7]
+			}
+		}
+	}
+	return "dev"
 }
 
 // AIProblem — почему функции ИИ мастерской недоступны; "" — настроены. Секреты в текст не попадают.

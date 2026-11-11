@@ -5,13 +5,15 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError, errorMessage, Teacher } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { checkStart, rangesByDay, type Busy, type FreeInterval } from "@/lib/booking";
-import { formatDateTime, formatDayLabel, formatPrice, hmIn, plural, tzLabel } from "@/lib/format";
+import { checkStart, emptySlotsReasons, rangesByDay, type SlotsResponse } from "@/lib/booking";
+import { LessonCheckButton } from "@/components/LessonCheck";
+import { formatDateTime, formatDayLabel, formatPrice, formatRange, hmIn, plural, tzLabel } from "@/lib/format";
+import { lessonTiming } from "@/lib/lessonTime";
 import { hmProblem, isCompleteHm, padHm } from "@/lib/time";
 import { serverNow } from "@/lib/serverClock";
 import { TimeInput } from "@/components/TimeInput";
 import { notifyLessonsChanged, useLessonsRefresh } from "@/lib/hooks";
-import { Avatar, BackLink, ConfirmModal, DemoBadge, Empty, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
+import { Avatar, BackLink, ConfirmModal, DemoBadge, ErrorBox, Loading, Notice, Spinner, Stars, toast } from "@/components/ui";
 
 interface Review {
   rating: number;
@@ -116,7 +118,7 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
   const [duration, setDuration] = useState(60);
   const [subject, setSubject] = useState(teacher.subjects[0] ?? "");
   const [note, setNote] = useState("");
-  const [data, setData] = useState<{ intervals: FreeInterval[]; myLessons: Busy[] } | null>(null);
+  const [data, setData] = useState<SlotsResponse | null>(null);
   const [error, setError] = useState("");
   const [day, setDay] = useState("");
   const [time, setTime] = useState("");
@@ -134,16 +136,17 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         setData(null);
         setError("");
       }
-      api<{ intervals: FreeInterval[]; myLessons: Busy[] }>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
+      api<SlotsResponse>(`/api/teachers/${teacher.id}/slots?duration=${duration}`)
         .then((r) => {
-          setData({ intervals: r.intervals ?? [], myLessons: r.myLessons ?? [] });
+          setData({ ...r, intervals: r.intervals ?? [], myLessons: r.myLessons ?? [], myLessonsWithTeacher: r.myLessonsWithTeacher ?? [] });
           setError("");
           setNow(new Date(serverNow()));
         })
         .catch((e) => {
           if (silent) return;
+          // Ошибка загрузки — не «нет свободного времени»: показываем ошибку и «Повторить», данных нет.
           setError(errorMessage(e));
-          setData({ intervals: [], myLessons: [] });
+          setData(null);
         });
     },
     [teacher.id, duration],
@@ -259,14 +262,31 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         </div>
       </div>
 
+      {!!data?.myLessonsWithTeacher?.length && <OwnLessons lessons={data.myLessonsWithTeacher} tz={tz} />}
+      {user?.role === "student" && (
+        <div className="mt-3">
+          <LessonCheckButton teacherId={teacher.id} />
+        </div>
+      )}
+
       <div className="mt-5">
-        {error && <ErrorBox message={error} onRetry={() => load()} />}
-        {data === null ? (
+        {error ? (
+          <div data-testid="slots-error">
+            <ErrorBox message={`Не удалось загрузить расписание: ${error}`} onRetry={() => load()} />
+          </div>
+        ) : data === null ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted">
             <Spinner className="h-4 w-4" /> Загружаем свободное время…
           </div>
         ) : byDay.size === 0 ? (
-          <Empty icon="🗓️" title="Нет свободного времени" text={`Нет свободных интервалов для урока ${duration} мин на ближайшие 3 недели.`} />
+          <div className="rounded-2xl border border-dashed border-line bg-white/60 p-4" data-testid="slots-empty">
+            <div className="font-semibold">Нет свободного времени для урока {duration} мин</div>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted" data-testid="slots-reasons">
+              {emptySlotsReasons(data, duration, (iso) => formatDayLabel(iso, tz)).map((t) => (
+                <li key={t}>{t}</li>
+              ))}
+            </ul>
+          </div>
         ) : (
           <>
             <div className="label">Дата</div>
@@ -385,5 +405,31 @@ function BookingPanel({ teacher }: { teacher: Teacher }) {
         }
       />
     </aside>
+  );
+}
+
+/** Предстоящие уроки ученика у этого преподавателя — видны, даже если нового свободного времени нет. */
+function OwnLessons({ lessons, tz }: { lessons: NonNullable<SlotsResponse["myLessonsWithTeacher"]>; tz: string }) {
+  return (
+    <div className="mt-4 rounded-2xl border border-brand-200 bg-brand-50 p-3" data-testid="own-lessons">
+      <div className="mb-2 text-sm font-semibold text-brand-900">Вы уже записаны к этому преподавателю</div>
+      <ul className="space-y-2">
+        {lessons.map((l) => (
+          <li key={l.id} className="rounded-xl bg-white p-3 text-sm">
+            <div className="font-medium">{l.subject}</div>
+            <div className="text-muted">
+              {l.alwaysOpen ? "Демо-класс, вход в любое время" : formatRange(l.startsAt, l.endsAt, tz)}
+              {!l.alwaysOpen && lessonTiming({ ...l }) && <> · {lessonTiming({ ...l })}</>}
+            </div>
+            <Link href={`/lessons/${l.id}`} className="mt-1 inline-block font-medium text-brand-700 hover:underline">
+              Открыть занятие →
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <Link href="/lessons" className="mt-2 inline-block text-sm font-medium text-brand-700 hover:underline">
+        Все мои занятия
+      </Link>
+    </div>
   );
 }

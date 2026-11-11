@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -68,7 +70,7 @@ type ctxUser struct {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), requestLogger(), securityHeaders(), serverTimeHeader())
+	r.Use(gin.Recovery(), requestID(), requestLogger(), securityHeaders(), serverTimeHeader())
 	r.MaxMultipartMemory = 8 << 20
 
 	// /api/health — процесс жив (liveness); /api/ready — есть связь с БД (readiness).
@@ -127,6 +129,8 @@ func (s *Server) Router() *gin.Engine {
 	u.GET("/lessons", s.myLessons)
 	u.GET("/my/students", requireRole("teacher"), s.myStudents)
 	u.GET("/my/homework", s.myHomework)
+	u.POST("/me/lesson-check", s.myLessonCheck)
+	u.POST("/me/diagnostics", s.myDeviceReport)
 	u.GET("/lessons/:id", s.getLesson)
 	u.POST("/lessons/:id/cancel", s.cancelLesson)
 	u.POST("/lessons/:id/join", s.joinLesson)
@@ -179,6 +183,9 @@ func (s *Server) Router() *gin.Engine {
 	adm.POST("/listings/:id/unhide", s.adminUnhideListing)
 	adm.GET("/users", s.adminUsers)
 	adm.GET("/stats", s.adminStats)
+	adm.POST("/diagnostics/lessons/:id", s.adminDiagnoseLesson)
+	adm.GET("/diagnostics/reports", s.adminDiagnosticReports)
+	adm.PATCH("/diagnostics/reports/:code", s.adminReviewReport)
 
 	r.NoRoute(func(c *gin.Context) { c.JSON(404, gin.H{"error": "Не найдено"}) })
 	return r
@@ -191,7 +198,22 @@ func requestLogger() gin.HandlerFunc {
 		if p := c.Request.URL.Path; p == "/api/health" || p == "/api/ready" {
 			return
 		}
-		slog.Info("http", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds())
+		slog.Info("http", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), "ms", time.Since(start).Milliseconds(), "rid", c.GetString("rid"))
+	}
+}
+
+// RequestIDHeader — идентификатор запроса в каждом ответе API и в журнале сервера. Пользователь может
+// передать его в обращении, а администратор — найти этот запрос в журнале. Секретов не содержит.
+const RequestIDHeader = "X-Request-ID"
+
+func requestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		b := make([]byte, 6)
+		rand.Read(b)
+		rid := hex.EncodeToString(b)
+		c.Set("rid", rid)
+		c.Writer.Header().Set(RequestIDHeader, rid)
+		c.Next()
 	}
 }
 
@@ -332,5 +354,6 @@ func (s *Server) publicConfig(c *gin.Context) {
 		"joinEarlyMinutes":     s.cfg.JoinEarlyMinutes,
 		"codeRunnerConfigured": s.runner != nil,
 		"workshopAIConfigured": s.ai != nil,
+		"version":              s.cfg.AppVersion,
 	})
 }

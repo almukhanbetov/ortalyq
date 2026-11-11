@@ -92,3 +92,46 @@ func TestFreeIntervalsTodayLikeTomorrow(t *testing.T) {
 		t.Errorf("19:00–20:30 в 19:20: %+v", got)
 	}
 }
+
+func TestDiagnoseSlots(t *testing.T) {
+	b := time.Date(2026, 11, 11, 7, 0, 0, 0, time.UTC) // 12:00 Asia/Almaty
+	now := b.Add(55 * time.Minute)                     // 12:55
+	at := func(min int) time.Time { return b.Add(time.Duration(min) * time.Minute) }
+	has := func(d slotsDiagnosis, r string) bool {
+		for _, x := range d.Reasons {
+			if x == r {
+				return true
+			}
+		}
+		return false
+	}
+	avail := []span{{at(40), at(150)}}                 // 12:40–14:30
+	busy := []span{{at(0), at(60)}, {at(60), at(120)}} // 12:00–13:00 и 13:00–14:00
+	if d := diagnoseSlots(avail, busy, now, 60*time.Minute, 0, nil); len(d.Reasons) != 1 || !has(d, slotsTooShort) || d.MaxFreeMinutes != 30 || d.WindowsChecked != 1 {
+		t.Fatalf("60 мин: %+v", d)
+	}
+	if d := diagnoseSlots(avail, busy, now, 30*time.Minute, 0, nil); len(d.Reasons) != 0 {
+		t.Fatalf("30 мин помещаются: %+v", d)
+	}
+	full := append(append([]span{}, busy...), span{at(120), at(150)})
+	if d := diagnoseSlots(avail, full, now, 30*time.Minute, 0, nil); len(d.Reasons) != 1 || !has(d, slotsBooked) {
+		t.Fatalf("всё занято: %+v", d)
+	}
+	// Несколько причин: один интервал занят, в другом промежуток короче, сегодняшний интервал уже прошёл
+	two := []span{{at(40), at(150)}, {at(24 * 60), at(24*60 + 45)}}
+	two2 := append([]span{}, full...)
+	if d := diagnoseSlots(two, two2, now, 60*time.Minute, 1, nil); !has(d, slotsBooked) || !has(d, slotsTooShort) || !has(d, slotsTodayPassed) || d.WindowsChecked != 2 || d.MaxFreeMinutes != 45 {
+		t.Fatalf("несколько причин: %+v", d)
+	}
+	if d := diagnoseSlots(avail, busy, at(151), 30*time.Minute, 1, nil); !has(d, slotsNoAvailability) || !has(d, slotsTodayPassed) {
+		t.Fatalf("интервал прошёл: %+v", d)
+	}
+	later := at(30 * 24 * 60)
+	if d := diagnoseSlots(nil, nil, now, 30*time.Minute, 0, &later); len(d.Reasons) != 1 || !has(d, slotsLaterOnly) {
+		t.Fatalf("только позже горизонта: %+v", d)
+	}
+	// Граница: урок, заканчивающийся ровно в момент начала интервала, не занимает его
+	if d := diagnoseSlots([]span{{at(120), at(180)}}, []span{{at(60), at(120)}}, now, 60*time.Minute, 0, nil); len(d.Reasons) != 0 {
+		t.Fatalf("граница [начало, конец): %+v", d)
+	}
+}

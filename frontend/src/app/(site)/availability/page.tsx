@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
@@ -14,9 +15,28 @@ interface Window {
   endsAt: string;
 }
 
+/** Занятие преподавателя, занимающее время (неотменённое, ещё не закончившееся). */
+interface BookedLesson {
+  id: string;
+  startsAt: string;
+  endsAt: string;
+  status: string;
+  subject: string;
+  studentName: string;
+  alwaysOpen: boolean;
+}
+
+interface Schedule {
+  availability: Window[];
+  lessons: BookedLesson[];
+  /** Доступность минус занятия, с текущего момента — то, что видят ученики при записи. */
+  free: { startsAt: string; endsAt: string }[];
+}
+
 export default function AvailabilityPage() {
   const { ready, tz } = useRequireUser(["teacher"]);
-  const [items, setItems] = useState<Window[] | null>(null);
+  const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const items = schedule?.availability ?? null;
   const [error, setError] = useState("");
   const [date, setDate] = useState("");
   const [from, setFrom] = useState("10:00");
@@ -36,10 +56,11 @@ export default function AvailabilityPage() {
   const load = useCallback(async () => {
     setError("");
     try {
-      setItems((await api<{ availability: Window[] }>("/api/my/availability")).availability);
+      const r = await api<Schedule>("/api/my/availability");
+      setSchedule({ availability: r.availability ?? [], lessons: r.lessons ?? [], free: r.free ?? [] });
     } catch (e) {
       setError(errorMessage(e));
-      setItems([]);
+      setSchedule({ availability: [], lessons: [], free: [] });
     }
   }, []);
   useEffect(() => {
@@ -104,15 +125,23 @@ export default function AvailabilityPage() {
     }
   };
 
+  // По дням: доступность, занятые интервалы и свободное время. День показывается, если есть хоть что-то
+  // (в том числе урок вне интервалов доступности — например, если интервал изменили после записи).
   const grouped = useMemo(() => {
-    const m = new Map<string, Window[]>();
-    for (const w of items ?? []) {
-      const k = dayKey(w.startsAt, tz);
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(w);
-    }
-    return m;
-  }, [items, tz]);
+    type Day = { first: string; windows: Window[]; lessons: BookedLesson[]; free: Schedule["free"] };
+    const m = new Map<string, Day>();
+    const day = (iso: string) => {
+      const k = dayKey(iso, tz);
+      if (!m.has(k)) m.set(k, { first: iso, windows: [], lessons: [], free: [] });
+      return m.get(k)!;
+    };
+    for (const w of schedule?.availability ?? []) day(w.startsAt).windows.push(w);
+    for (const l of schedule?.lessons ?? []) if (!l.alwaysOpen) day(l.startsAt).lessons.push(l);
+    for (const f of schedule?.free ?? []) day(f.startsAt).free.push(f);
+    return new Map([...m.entries()].sort(([a], [b]) => a.localeCompare(b)));
+  }, [schedule, tz]);
+  const insideAvailability = (l: BookedLesson) =>
+    (schedule?.availability ?? []).some((w) => Date.parse(w.startsAt) <= Date.parse(l.startsAt) && Date.parse(l.endsAt) <= Date.parse(w.endsAt));
 
   if (!ready) return <Loading />;
   return (
@@ -186,23 +215,63 @@ export default function AvailabilityPage() {
           {error && <ErrorBox message={error} onRetry={load} />}
           {items === null ? (
             <Skeleton className="h-40" />
-          ) : items.length === 0 ? (
+          ) : grouped.size === 0 ? (
             <Empty icon="🕒" title="Интервалов пока нет" text="Добавьте время, когда вы готовы проводить занятия." />
           ) : (
             <div className="space-y-3">
-              {[...grouped.entries()].map(([k, list]) => (
-                <div key={k} className="card flex flex-wrap items-center gap-3 p-4">
-                  <div className="w-32 font-medium capitalize">{formatDayLabel(list[0].startsAt, tz)}</div>
-                  <div className="flex flex-1 flex-wrap gap-2">
-                    {list.map((w) => (
-                      <span key={w.id} className="chip gap-2 bg-brand-50 py-1.5 text-sm text-brand-800">
-                        {formatTime(w.startsAt, tz)}–{formatTime(w.endsAt, tz)}
-                        <button className="text-brand-400 hover:text-red-600" aria-label="Удалить интервал" onClick={() => setRemoving(w)}>
-                          ✕
-                        </button>
-                      </span>
-                    ))}
-                  </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted" aria-label="Обозначения">
+                <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-full bg-brand-400 align-middle" />Доступность — когда можно записаться</span>
+                <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-full bg-amber-400 align-middle" />Занято — уже записанные занятия</span>
+                <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 align-middle" />Свободно — что сейчас видят ученики</span>
+              </div>
+              {[...grouped.entries()].map(([k, d]) => (
+                <div key={k} className="card space-y-2 p-4" data-testid="schedule-day">
+                  <div className="font-medium capitalize">{formatDayLabel(d.first, tz)}</div>
+                  <Row label="Доступность">
+                    {d.windows.length === 0 ? (
+                      <span className="text-sm text-muted">интервалов нет</span>
+                    ) : (
+                      d.windows.map((w) => (
+                        <span key={w.id} className="chip gap-2 bg-brand-50 py-1.5 text-sm text-brand-800" data-testid="schedule-window">
+                          {formatTime(w.startsAt, tz)}–{formatTime(w.endsAt, tz)}
+                          <button className="text-brand-400 hover:text-red-600" aria-label="Удалить интервал" onClick={() => setRemoving(w)}>
+                            ✕
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </Row>
+                  {d.lessons.length > 0 && (
+                    <Row label="Занято">
+                      {d.lessons.map((l) => (
+                        <Link
+                          key={l.id}
+                          href={`/lessons/${l.id}`}
+                          className="chip gap-1 bg-amber-50 py-1.5 text-sm text-amber-900 ring-1 ring-amber-200 hover:bg-amber-100"
+                          data-testid="schedule-busy"
+                        >
+                          {formatTime(l.startsAt, tz)}–{formatTime(l.endsAt, tz)} · {l.studentName}
+                          {l.status === "live" && <span className="text-emerald-700"> · идёт</span>}
+                          {!insideAvailability(l) && <span className="text-amber-700"> · вне интервала доступности</span>}
+                        </Link>
+                      ))}
+                    </Row>
+                  )}
+                  {(d.windows.length > 0 || d.free.length > 0) && (
+                    <Row label="Свободно">
+                      {d.free.length === 0 ? (
+                        <span className="text-sm text-muted" data-testid="schedule-free-none">
+                          свободного времени для записи нет
+                        </span>
+                      ) : (
+                        d.free.map((f) => (
+                          <span key={f.startsAt} className="chip bg-emerald-50 py-1.5 text-sm text-emerald-800" data-testid="schedule-free">
+                            {formatTime(f.startsAt, tz)}–{formatTime(f.endsAt, tz)} · {minutesBetween(f.startsAt, f.endsAt)} мин
+                          </span>
+                        ))
+                      )}
+                    </Row>
+                  )}
                 </div>
               ))}
             </div>
@@ -212,7 +281,7 @@ export default function AvailabilityPage() {
       <ConfirmModal
         open={!!removing}
         title="Удалить интервал?"
-        text="Ученики больше не смогут записаться на это время. Уже созданные занятия сохранятся."
+        text="Ученики больше не смогут записаться на это время. Уже созданные занятия сохранятся и останутся в расписании как «Занято»."
         confirmLabel="Удалить"
         danger
         onClose={() => setRemoving(null)}
@@ -220,4 +289,17 @@ export default function AvailabilityPage() {
       />
     </div>
   );
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="w-24 shrink-0 text-xs font-semibold text-muted">{label}</div>
+      <div className="flex flex-1 flex-wrap gap-2">{children}</div>
+    </div>
+  );
+}
+
+function minutesBetween(a: string, b: string) {
+  return Math.round((Date.parse(b) - Date.parse(a)) / 60000);
 }

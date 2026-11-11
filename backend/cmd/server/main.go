@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ortalyq/backend/internal/api"
@@ -31,6 +34,11 @@ const usage = `Использование: server <команда>
   localize-demo  обновить существующие демо-записи под Казахстан (₸, имена, города); можно запускать повторно
   demo-room      пересоздать только демо-класс (чистая доска и чат), остальные данные не трогаются
   create-admin   создать администратора: -email, -name; пароль из ADMIN_PASSWORD
+  version        вывести версию приложения (без подключения к БД)
+  diagnose-lesson -id <UUID> [-json] [-record]
+                 диагностика занятия: участники, время UTC и в поясах участников, статус, списки,
+                 право входа, пересечения, дубли. Только чтение (транзакция READ ONLY); с -record
+                 найденные предупреждения фиксируются как обращение (без дублей). Секреты не выводятся.
 `
 
 func main() {
@@ -40,6 +48,10 @@ func main() {
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
+	if cmd == "version" {
+		fmt.Println(config.Version())
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fatal(err)
@@ -109,6 +121,15 @@ func main() {
 			fatal(err)
 		}
 		fmt.Println("Администратор создан:", *email)
+	case "diagnose-lesson":
+		fs := flag.NewFlagSet("diagnose-lesson", flag.ExitOnError)
+		id := fs.String("id", "", "UUID занятия")
+		asJSON := fs.Bool("json", false, "вывести JSON")
+		record := fs.Bool("record", false, "зафиксировать предупреждения как обращение (запись в diagnostic_reports)")
+		fs.Parse(os.Args[2:])
+		if err := diagnoseLesson(ctx, cfg, pool, strings.TrimSpace(*id), *asJSON, *record); err != nil {
+			fatal(err)
+		}
 	case "serve":
 		serve(ctx, cfg, pool)
 	default:
@@ -170,6 +191,46 @@ func serve(ctx context.Context, cfg *config.Config, p *pgxpool.Pool) {
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(err)
 	}
+}
+
+// diagnoseLesson — CLI-диагностика занятия. Без -record выполняется в транзакции только для чтения:
+// данные не могут быть изменены даже случайно. Миграции не применяются.
+func diagnoseLesson(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, id string, asJSON, record bool) error {
+	if len(id) != 36 {
+		return fmt.Errorf("укажите -id: UUID занятия из 36 символов (получено %d символов)", len(id))
+	}
+	mode := pgx.ReadOnly
+	if record {
+		mode = pgx.ReadWrite
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: mode})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	srv := api.New(cfg, pool, nil, nil)
+	r, err := srv.DiagnoseLesson(ctx, tx, id, time.Now())
+	if err != nil {
+		if db.IsNoRows(err) {
+			return fmt.Errorf("занятие %s не найдено", id)
+		}
+		return err
+	}
+	if record {
+		if r.ReportCode, err = api.RecordLessonReport(ctx, tx, r, nil); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+	}
+	if asJSON {
+		b, _ := json.MarshalIndent(r, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	api.PrintLessonReport(os.Stdout, r)
+	return nil
 }
 
 func fatal(err error) {

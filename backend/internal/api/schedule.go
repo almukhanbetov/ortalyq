@@ -119,3 +119,91 @@ func userLocation(tz string) *time.Location {
 	}
 	return loc
 }
+
+// Диагностика пустой выдачи свободного времени. Использует те же функции, что и freeIntervals
+// (mergeSpans, subtractSpans, earliestStart), — отдельной логики времени нет.
+// Причин может быть несколько: каждый будущий интервал в горизонте оценивается отдельно.
+// Сведения о чужих занятиях (имена, время) сюда не попадают — только счётчики и длительности.
+const (
+	slotsNoAvailability = "no_availability" // нет будущих интервалов доступности
+	slotsLaterOnly      = "later_only"      // в горизонте интервалов нет, но есть более поздние
+	slotsBooked         = "booked"          // есть интервалы, всё время которых уже занято
+	slotsTooShort       = "too_short"       // есть свободные промежутки, но короче выбранной длительности
+	slotsTodayPassed    = "today_passed"    // сегодняшние интервалы уже закончились
+)
+
+type slotsDiagnosis struct {
+	Reasons        []string   `json:"reasons"`
+	MaxFreeMinutes int        `json:"maxFreeMinutes"` // самый длинный свободный промежуток
+	WindowsChecked int        `json:"windowsChecked"` // будущих интервалов в горизонте
+	BookedWindows  int        `json:"bookedWindows"`  // из них полностью заняты
+	ShortWindows   int        `json:"shortWindows"`   // из них со свободными промежутками короче урока
+	PassedToday    int        `json:"passedToday"`    // интервалов сегодня, которые уже закончились
+	NextWindowAt   *time.Time `json:"nextWindowAt"`   // ближайший интервал за пределами горизонта
+}
+
+// futureFree — доступность минус занятия, начиная с earliestStart(now), без учёта длительности урока.
+func futureFree(avail, busy []span, now time.Time) []span {
+	min := earliestStart(now)
+	out := []span{}
+	for _, f := range subtractSpans(avail, busy) {
+		if f.From.Before(min) {
+			f.From = min
+		}
+		if f.To.After(f.From) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// diagnoseSlots объясняет пустую выдачу для урока длительностью dur. avail и busy — те же данные,
+// что получает freeIntervals; passedToday и nextWindowAt — дополнительные факты для пояснения.
+// Если подходящие интервалы есть, Reasons пуст.
+func diagnoseSlots(avail, busy []span, now time.Time, dur time.Duration, passedToday int, nextWindowAt *time.Time) slotsDiagnosis {
+	d := slotsDiagnosis{Reasons: []string{}, PassedToday: passedToday, NextWindowAt: nextWindowAt}
+	if len(freeIntervals(avail, busy, now, dur)) > 0 {
+		return d
+	}
+	min := earliestStart(now)
+	for _, w := range mergeSpans(avail) {
+		if !w.To.After(min) {
+			continue
+		}
+		if w.From.Before(min) {
+			w.From = min
+		}
+		d.WindowsChecked++
+		free := futureFree([]span{w}, busy, now)
+		if len(free) == 0 {
+			d.BookedWindows++
+			continue
+		}
+		longest := 0
+		for _, f := range free {
+			if m := int(f.To.Sub(f.From) / time.Minute); m > longest {
+				longest = m
+			}
+		}
+		if longest > d.MaxFreeMinutes {
+			d.MaxFreeMinutes = longest
+		}
+		d.ShortWindows++
+	}
+	switch {
+	case d.WindowsChecked == 0 && nextWindowAt != nil:
+		d.Reasons = append(d.Reasons, slotsLaterOnly)
+	case d.WindowsChecked == 0:
+		d.Reasons = append(d.Reasons, slotsNoAvailability)
+	}
+	if d.ShortWindows > 0 {
+		d.Reasons = append(d.Reasons, slotsTooShort)
+	}
+	if d.BookedWindows > 0 {
+		d.Reasons = append(d.Reasons, slotsBooked)
+	}
+	if passedToday > 0 {
+		d.Reasons = append(d.Reasons, slotsTodayPassed)
+	}
+	return d
+}

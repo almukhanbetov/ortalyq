@@ -37,6 +37,31 @@ body {
   outline-offset: 2px;
 }
 
+/* Курсор-«ладонь» для активных элементов управления (Tailwind 4 по умолчанию оставляет у кнопок обычную стрелку).
+   Вложенные иконки и текст наследуют курсор. Поля ввода, обычный текст и неактивные элементы «ладонь» не получают;
+   неактивные — единый курсор not-allowed (как в утилите btn). */
+@layer base {
+  a[href],
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]),
+  [role="radio"]:not([aria-disabled="true"]),
+  summary,
+  select:not(:disabled),
+  input:is([type="checkbox"], [type="radio"], [type="file"], [type="submit"], [type="button"], [type="reset"]):not(:disabled),
+  input[type="file"]:not(:disabled)::file-selector-button,
+  label:has(> input:is([type="checkbox"], [type="radio"]):not(:disabled)) {
+    cursor: pointer;
+  }
+  button:disabled,
+  select:disabled,
+  input:is([type="checkbox"], [type="radio"], [type="file"], [type="submit"], [type="button"], [type="reset"]):disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
+
 @utility card {
   @apply rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)];
 }

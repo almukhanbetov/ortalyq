@@ -13,6 +13,56 @@ export function Spinner({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+function EyeIcon({ crossed }: { crossed: boolean }) {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+      {crossed && <path d="M3 3l18 18" />}
+    </svg>
+  );
+}
+
+/** Поле пароля с кнопкой «показать/скрыть». По умолчанию пароль скрыт. id, name, autoComplete, required,
+ *  minLength и прочие атрибуты передаются полю как есть — менеджеры паролей и проверка формы работают как раньше. */
+export function PasswordInput({ className = "", ...props }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "type">) {
+  const [visible, setVisible] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  const toggle = () => {
+    const el = ref.current;
+    const focused = !!el && document.activeElement === el;
+    const start = el?.selectionStart ?? null;
+    const end = el?.selectionEnd ?? null;
+    setVisible((v) => !v);
+    // Смена type в некоторых браузерах сбрасывает курсор — возвращаем фокус и позицию курсора в поле.
+    if (el && focused)
+      requestAnimationFrame(() => {
+        el.focus();
+        if (start !== null && end !== null) el.setSelectionRange(start, end);
+      });
+  };
+  const label = visible ? "Скрыть пароль" : "Показать пароль";
+  return (
+    <div className="relative">
+      <input {...props} ref={ref} type={visible ? "text" : "password"} autoCapitalize="none" autoCorrect="off" spellCheck={false} className={`input pr-11 ${className}`} />
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()} // нажатие мышью не забирает фокус у поля
+        onClick={toggle}
+        aria-label={label}
+        aria-pressed={visible}
+        aria-controls={props.id}
+        title={label}
+        className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-muted transition hover:text-brand-700 focus-visible:-outline-offset-2 disabled:opacity-50"
+        disabled={props.disabled}
+        data-testid="password-toggle"
+      >
+        <EyeIcon crossed={visible} />
+      </button>
+    </div>
+  );
+}
+
 export function Loading({ label = "Загрузка…" }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-3 py-16 text-sm text-muted" role="status">

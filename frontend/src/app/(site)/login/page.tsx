@@ -5,7 +5,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, errorMessage, User } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { ErrorBox, Spinner } from "@/components/ui";
+import { ErrorBox, PasswordInput, Spinner } from "@/components/ui";
 
 function safeNext(v: string | null) {
   return v && v.startsWith("/") && !v.startsWith("//") ? v : "/dashboard";
@@ -47,7 +47,7 @@ function LoginForm() {
           </div>
           <div>
             <label className="label" htmlFor="password">Пароль</label>
-            <input id="password" className="input" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+            <PasswordInput id="password" name="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
           {error && <ErrorBox message={error} />}
           <button className="btn-primary w-full" disabled={busy}>

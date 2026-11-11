@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, errorMessage, User } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { browserTimezone } from "@/lib/format";
-import { ErrorBox, Spinner } from "@/components/ui";
+import { ErrorBox, PasswordInput, Spinner } from "@/components/ui";
 
 function RegisterForm() {
   const router = useRouter();
@@ -73,7 +73,7 @@ function RegisterForm() {
           </div>
           <div>
             <label className="label" htmlFor="password">Пароль</label>
-            <input id="password" className="input" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
+            <PasswordInput id="password" name="password" autoComplete="new-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
             <p className="mt-1 text-xs text-muted">Не менее 8 символов</p>
           </div>
           {error && <ErrorBox message={error} />}

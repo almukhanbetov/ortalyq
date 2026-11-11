@@ -93,7 +93,10 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     environment:
       DATABASE_URL: postgres://ortalyq:${POSTGRES_PASSWORD}@postgres:5432/ortalyq?sslmode=disable
       APP_SECRET: ${APP_SECRET:?set APP_SECRET}
@@ -134,6 +137,7 @@ services:
       context: ./frontend
       args:
         BACKEND_INTERNAL_URL: http://backend:18080
+        APP_VERSION: ${APP_VERSION:-dev}
     # 127.0.0.1:13000 — шаблон записи для Egress
     ports: ["127.0.0.1:13000:3000"]
     depends_on: [backend]

@@ -9,7 +9,10 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Адрес бэкенда для проксирования /api встраивается при сборке (rewrites)
 ARG BACKEND_INTERNAL_URL=http://backend:18080
-ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL NEXT_TELEMETRY_DISABLED=1
+# Версия релиза (полный SHA коммита): NEXT_PUBLIC_* встраивается Next.js в собранный код при `next build`
+# и попадает в диагностику «Не вижу урок / Не могу войти». Локально — dev.
+ARG APP_VERSION=dev
+ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL NEXT_PUBLIC_APP_VERSION=$APP_VERSION NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM node:20-alpine

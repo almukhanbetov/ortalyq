@@ -99,6 +99,8 @@ kubectl -n ortalyq rollout restart deployment/backend
 
 Миграция `0004_code_editor` только добавляет таблицы `code_docs` и `code_runs`. Предыдущий образ backend на новой схеме работает (проверено), поэтому откат образа после неё безопасен.
 
+Миграции `0006_diagnostics` (таблица `diagnostic_reports`) и `0007_diagnostic_review` (новые столбцы со значениями по умолчанию) только расширяют схему. Предыдущий образ backend на новой схеме работает (проверено), откат образа безопасен. Версия релиза (SHA коммита) передаётся в оба образа при сборке (`APP_VERSION` в `images.yml`) и видна в диагностике; проверить образ backend: `kubectl -n ortalyq exec deploy/backend -- server version`.
+
 ## 3. GitHub: подготовка
 
 1. **Settings → Actions → General.**

@@ -40,6 +40,7 @@ func (s *Server) tick(ctx context.Context) {
 		rows.Close()
 		for _, id := range ids {
 			s.stopActiveRecordings(ctx, id)
+			s.hub.CloseLesson(id)
 			s.hub.Flush(id)
 			s.hub.Broadcast(id, map[string]any{"type": "lesson.status", "status": "completed"})
 			if s.lk != nil {

@@ -19,6 +19,7 @@ import {
 import { isUpcoming, lessonPhase, lessonTiming } from "@/lib/lessonTime";
 import { Board, exportBoardPng } from "@/components/board";
 import { openSignedLink, RecordingBadge } from "@/components/lessonShared";
+import { LessonWorkshop } from "@/components/workshop/LessonWorkshop";
 import { Avatar, BackLink, ConfirmModal, DemoBadge, ErrorBox, Loading, Notice, Spinner, StatusBadge, Stars, toast } from "@/components/ui";
 
 export default function LessonPage({ params }: { params: Promise<{ id: string }> }) {
@@ -155,6 +156,8 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
       <BoardSection lessonId={id} count={data.board.elementCount} revision={data.board.revision} />
 
       <HomeworkSection lessonId={id} items={data.homework} isTeacher={isTeacher} reload={load} tz={tz} storage={!!config?.storageConfigured} />
+
+      <LessonWorkshop lessonId={id} tz={tz} cancelled={l.status === "cancelled"} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <ChatHistory lessonId={id} count={data.chatCount} tz={tz} />

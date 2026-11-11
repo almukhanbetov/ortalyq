@@ -91,7 +91,8 @@ func setupCode(t *testing.T) *tenv {
 	e.lessonA, e.lessonB = mk("student", -10*time.Minute, 10*time.Minute), mk("outsider", 10*time.Minute, 70*time.Minute)
 
 	cfg := &config.Config{AppSecret: strings.Repeat("s", 32), PublicOrigins: []string{"http://test.local"}, JoinEarlyMinutes: 15, CodeRunCPUSeconds: 2,
-		CodeRunWallSeconds: 5, CodeRunMemoryMB: 128, CodeRunMaxConcurrent: 4, CodeRunnerPythonID: 71}
+		CodeRunWallSeconds: 5, CodeRunMemoryMB: 128, CodeRunMaxConcurrent: 4, CodeRunnerPythonID: 71,
+		WorkshopAIPerMinute: 100, WorkshopAIPerHour: 1000}
 	e.srv = New(cfg, pool, nil, nil)
 	hctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)

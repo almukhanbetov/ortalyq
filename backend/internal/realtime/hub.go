@@ -41,10 +41,12 @@ type Client struct {
 	UserID string
 	Name   string
 	Role   string
-	send   chan []byte
-	conn   *websocket.Conn
-	mu     sync.Mutex
-	closed bool
+	// EditUntil — до какого момента клиент может править учебный текст (окно класса; нулевое — без ограничения).
+	EditUntil time.Time
+	send      chan []byte
+	conn      *websocket.Conn
+	mu        sync.Mutex
+	closed    bool
 }
 
 type room struct {
@@ -55,7 +57,9 @@ type room struct {
 	order    []string
 	revision int64
 	dirty    bool
-	code     codeState
+	code     *codeState // документ редактора кода
+	workshop *codeState // учебный текст мастерской (отдельный документ)
+	closed   bool       // урок завершён/отменён: правки учебного текста запрещены
 }
 
 type Hub struct {
@@ -92,7 +96,7 @@ func (h *Hub) flushAll() {
 	h.mu.Unlock()
 	for _, r := range list {
 		h.persist(r)
-		h.persistCode(r)
+		h.persistDocs(r)
 	}
 }
 
@@ -127,7 +131,8 @@ func (h *Hub) getRoom(ctx context.Context, lessonID string) *room {
 		return r
 	}
 	els, order, rev := h.loadBoard(ctx, lessonID)
-	r := &room{id: lessonID, clients: map[*Client]bool{}, elements: els, order: order, revision: rev, code: h.loadCode(ctx, lessonID)}
+	r := &room{id: lessonID, clients: map[*Client]bool{}, elements: els, order: order, revision: rev,
+		code: h.loadDoc(ctx, codeKind, lessonID), workshop: h.loadDoc(ctx, workshopKind, lessonID)}
 	h.rooms[lessonID] = r
 	return r
 }
@@ -170,7 +175,7 @@ func (h *Hub) Flush(lessonID string) {
 	h.mu.Unlock()
 	if r != nil {
 		h.persist(r)
-		h.persistCode(r)
+		h.persistDocs(r)
 	}
 }
 
@@ -293,10 +298,10 @@ func (h *Hub) Serve(ctx context.Context, conn *websocket.Conn, lessonID string, 
 	r.mu.Unlock()
 	if empty {
 		h.persist(r)
-		h.persistCode(r)
+		h.persistDocs(r)
 		h.mu.Lock()
 		r.mu.Lock()
-		if len(r.clients) == 0 && !r.dirty && !r.code.dirty {
+		if len(r.clients) == 0 && !r.dirty && !r.docsDirtyLocked() {
 			delete(h.rooms, lessonID)
 		}
 		r.mu.Unlock()
@@ -366,11 +371,17 @@ func (h *Hub) handle(ctx context.Context, r *room, c *Client, data []byte, chat 
 		r.mu.Unlock()
 		c.enqueue(b)
 	case "code.sync":
-		h.codeSync(r, c)
+		h.docSync(r, codeKind, c)
 	case "code.update":
-		h.codeUpdate(r, c, msg.Update, truncID(msg.Cid))
+		h.docUpdate(r, codeKind, c, msg.Update, truncID(msg.Cid))
 	case "code.compact":
-		h.codeCompact(r, c, msg.UpTo, msg.State)
+		h.docCompact(r, codeKind, c, msg.UpTo, msg.State)
+	case "workshop.sync":
+		h.docSync(r, workshopKind, c)
+	case "workshop.update":
+		h.docUpdate(r, workshopKind, c, msg.Update, truncID(msg.Cid))
+	case "workshop.compact":
+		h.docCompact(r, workshopKind, c, msg.UpTo, msg.State)
 	case "chat.send":
 		if chat == nil {
 			return

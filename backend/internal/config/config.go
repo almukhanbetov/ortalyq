@@ -49,6 +49,17 @@ type Config struct {
 	CodeRunWallSeconds   float64
 	CodeRunMemoryMB      int
 	CodeRunMaxConcurrent int // одновременных запусков на весь бэкенд
+
+	// ИИ «Учебной мастерской» (OpenAI Responses API). Ключ — только серверный секрет, в браузер не передаётся.
+	// Пустой ключ или модель — функции ИИ недоступны, совместный текст и сохранённые материалы работают.
+	OpenAIAPIKey          string
+	OpenAIModel           string
+	OpenAIBaseURL         string // по умолчанию https://api.openai.com/v1
+	OpenAIReasoningEffort string // необязательно: low, medium, high… (только для моделей с рассуждением)
+	OpenAITimeoutSeconds  int    // таймаут одного запроса к провайдеру
+	OpenAIMaxOutputTokens int    // ограничение длины ответа (включая токены рассуждения)
+	WorkshopAIPerMinute   int    // запросов к ИИ в минуту на преподавателя
+	WorkshopAIPerHour     int    // запросов к ИИ в час на урок
 }
 
 func env(key, def string) string {
@@ -127,6 +138,14 @@ func Load() (*Config, error) {
 		CodeRunWallSeconds:    envFloat("CODE_RUN_WALL_SECONDS", 5),
 		CodeRunMemoryMB:       envInt("CODE_RUN_MEMORY_MB", 128),
 		CodeRunMaxConcurrent:  envInt("CODE_RUN_MAX_CONCURRENT", 4),
+		OpenAIAPIKey:          env("OPENAI_API_KEY", ""),
+		OpenAIModel:           env("OPENAI_MODEL", ""),
+		OpenAIBaseURL:         strings.TrimRight(env("OPENAI_BASE_URL", "https://api.openai.com/v1"), "/"),
+		OpenAIReasoningEffort: env("OPENAI_REASONING_EFFORT", ""),
+		OpenAITimeoutSeconds:  envInt("OPENAI_TIMEOUT_SECONDS", 60),
+		OpenAIMaxOutputTokens: envInt("OPENAI_MAX_OUTPUT_TOKENS", 4000),
+		WorkshopAIPerMinute:   envInt("WORKSHOP_AI_PER_MINUTE", 6),
+		WorkshopAIPerHour:     envInt("WORKSHOP_AI_PER_HOUR", 40),
 	}
 	for _, o := range strings.Split(env("PUBLIC_ORIGINS", "http://localhost:13000"), ",") {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -153,7 +172,26 @@ func Load() (*Config, error) {
 	c.CodeRunWallSeconds = max(min(c.CodeRunWallSeconds, 20), 1)
 	c.CodeRunMemoryMB = max(min(c.CodeRunMemoryMB, 512), 32)
 	c.CodeRunMaxConcurrent = max(min(c.CodeRunMaxConcurrent, 32), 1)
+	if !strings.HasPrefix(c.OpenAIBaseURL, "https://") && !strings.HasPrefix(c.OpenAIBaseURL, "http://") {
+		return nil, fmt.Errorf("OPENAI_BASE_URL must start with http:// or https://")
+	}
+	// Прокси перед API ждёт ответа не дольше 120 с (deploy/nginx), поэтому таймаут ИИ — до 100 с.
+	c.OpenAITimeoutSeconds = max(min(c.OpenAITimeoutSeconds, 100), 5)
+	c.OpenAIMaxOutputTokens = max(min(c.OpenAIMaxOutputTokens, 16000), 500)
+	c.WorkshopAIPerMinute = max(min(c.WorkshopAIPerMinute, 60), 1)
+	c.WorkshopAIPerHour = max(min(c.WorkshopAIPerHour, 1000), 1)
 	return c, nil
+}
+
+// AIProblem — почему функции ИИ мастерской недоступны; "" — настроены. Секреты в текст не попадают.
+func (c *Config) AIProblem() string {
+	switch {
+	case c.OpenAIAPIKey == "":
+		return "ИИ не настроен на сервере (не задан OPENAI_API_KEY)"
+	case c.OpenAIModel == "":
+		return "ИИ не настроен на сервере (не задан OPENAI_MODEL)"
+	}
+	return ""
 }
 
 // CodeRunnerConfigured — задан адрес исполнителя кода.

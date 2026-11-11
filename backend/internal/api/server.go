@@ -18,6 +18,7 @@ import (
 	"ortalyq/backend/internal/lk"
 	"ortalyq/backend/internal/realtime"
 	"ortalyq/backend/internal/storage"
+	"ortalyq/backend/internal/workshop"
 )
 
 type Server struct {
@@ -29,12 +30,20 @@ type Server struct {
 	hub    *realtime.Hub
 	runner coderun.Runner // nil, если исполнитель кода не настроен
 	runs   *codeRuns
+	ai     workshop.Provider // nil, если ИИ мастерской не настроен
+	aiBusy *aiInFlight
 }
 
 func New(cfg *config.Config, db *pgxpool.Pool, store *storage.Store, lkc *lk.Client) *Server {
 	s := &Server{cfg: cfg, db: db, store: store, lk: lkc, signer: auth.NewSigner(cfg.AppSecret)}
 	s.hub = realtime.NewHub(db)
 	s.runs = newCodeRuns(cfg.CodeRunMaxConcurrent)
+	s.aiBusy = &aiInFlight{busy: map[string]bool{}}
+	if cfg.AIProblem() == "" {
+		s.ai = &workshop.OpenAI{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Model: cfg.OpenAIModel,
+			ReasoningEffort: cfg.OpenAIReasoningEffort, MaxOutputTokens: cfg.OpenAIMaxOutputTokens,
+			Timeout: time.Duration(cfg.OpenAITimeoutSeconds) * time.Second, HTTP: &http.Client{}}
+	}
 	if cfg.CodeRunnerConfigured() {
 		s.runner = coderun.NewJudge0(cfg.CodeRunnerURL, cfg.CodeRunnerAuthHeader, cfg.CodeRunnerToken)
 	}
@@ -128,6 +137,22 @@ func (s *Server) Router() *gin.Engine {
 	u.GET("/lessons/:id/code", s.getCode)
 	u.POST("/lessons/:id/code/runs", s.createCodeRun)
 	u.POST("/lessons/:id/code/runs/:rid/cancel", s.cancelCodeRun)
+
+	// Учебная мастерская
+	u.GET("/lessons/:id/workshop", s.getWorkshop)
+	u.GET("/lessons/:id/workshop/doc", s.getWorkshopDoc)
+	u.PUT("/lessons/:id/workshop/mode", s.setWorkshopMode)
+	u.POST("/lessons/:id/workshop/ai-notice", s.ackWorkshopNotice)
+	u.POST("/lessons/:id/workshop/analyses", s.createAnalysis)
+	u.PUT("/lessons/:id/workshop/analyses/:aid", s.updateAnalysis)
+	u.POST("/lessons/:id/workshop/analyses/:aid/publish", s.publishAnalysis(true))
+	u.POST("/lessons/:id/workshop/analyses/:aid/unpublish", s.publishAnalysis(false))
+	u.DELETE("/lessons/:id/workshop/analyses/:aid", s.deleteAnalysis)
+	u.POST("/lessons/:id/workshop/homework", s.createWorkshopHomework)
+	u.PUT("/lessons/:id/workshop/homework/:hid", s.updateWorkshopHomework)
+	u.POST("/lessons/:id/workshop/homework/:hid/publish", s.publishWorkshopHomework(true))
+	u.POST("/lessons/:id/workshop/homework/:hid/unpublish", s.publishWorkshopHomework(false))
+	u.DELETE("/lessons/:id/workshop/homework/:hid", s.deleteWorkshopHomework)
 
 	u.POST("/lessons/:id/recordings", requireRole("teacher"), s.requestRecording)
 	u.POST("/lessons/:id/recordings/:rid/consent", s.consentRecording)
@@ -306,5 +331,6 @@ func (s *Server) publicConfig(c *gin.Context) {
 		"maxUploadMB":          s.cfg.MaxUploadMB,
 		"joinEarlyMinutes":     s.cfg.JoinEarlyMinutes,
 		"codeRunnerConfigured": s.runner != nil,
+		"workshopAIConfigured": s.ai != nil,
 	})
 }

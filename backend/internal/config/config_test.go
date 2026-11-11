@@ -65,3 +65,29 @@ func TestRecordingProblem(t *testing.T) {
 		t.Fatalf("RecordingTemplateBase = %q", c.RecordingTemplateBase)
 	}
 }
+
+func TestAIConfig(t *testing.T) {
+	setBase(t)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AIProblem() == "" || strings.Contains(c.AIProblem(), "sk-") {
+		t.Fatalf("без ключа ИИ должен быть недоступен: %q", c.AIProblem())
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-test-secret-value")
+	if c, _ = Load(); !strings.Contains(c.AIProblem(), "OPENAI_MODEL") {
+		t.Fatalf("без модели ИИ должен быть недоступен: %q", c.AIProblem())
+	}
+	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_TIMEOUT_SECONDS", "999")
+	c, _ = Load()
+	if c.AIProblem() != "" || c.OpenAITimeoutSeconds != 100 || c.OpenAIBaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("AI config: %q %d %q", c.AIProblem(), c.OpenAITimeoutSeconds, c.OpenAIBaseURL)
+	}
+	if strings.Contains(c.AIProblem(), "sk-test") {
+		t.Fatal("ключ не должен попадать в сообщения")
+	}
+}

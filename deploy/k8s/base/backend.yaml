@@ -73,6 +73,12 @@ spec:
               valueFrom: {secretKeyRef: {name: ortalyq-code-runner, key: CODE_RUNNER_TOKEN, optional: true}}
             - name: CODE_RUNNER_PYTHON_ID
               valueFrom: {secretKeyRef: {name: ortalyq-code-runner, key: CODE_RUNNER_PYTHON_ID, optional: true}}
+            # ИИ «Учебной мастерской» (docs/WORKSHOP.md). Secret ortalyq-openai необязателен: без него
+            # совместный текст и сохранённые материалы работают, а функции ИИ явно недоступны.
+            - name: OPENAI_API_KEY
+              valueFrom: {secretKeyRef: {name: ortalyq-openai, key: OPENAI_API_KEY, optional: true}}
+            - name: OPENAI_MODEL
+              valueFrom: {secretKeyRef: {name: ortalyq-openai, key: OPENAI_MODEL, optional: true}}
           ports:
             - {name: http, containerPort: 18080}
           startupProbe:

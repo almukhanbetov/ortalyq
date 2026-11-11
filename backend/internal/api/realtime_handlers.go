@@ -80,7 +80,12 @@ func (s *Server) lessonWS(c *gin.Context) {
 		"recording":    s.activeRecording(c, l.ID),
 	}
 	// Контекст запроса gin завершится вместе с соединением.
-	s.hub.Serve(c.Request.Context(), conn, l.ID, &realtime.Client{UserID: u.ID, Name: u.Name, Role: role}, hello, s.storeChat)
+	// Учебный текст можно править до окончания окна класса (как и сам вход); демо-класс — без ограничения.
+	var editUntil time.Time
+	if !l.AlwaysOpen {
+		_, editUntil = s.joinWindow(l)
+	}
+	s.hub.Serve(c.Request.Context(), conn, l.ID, &realtime.Client{UserID: u.ID, Name: u.Name, Role: role, EditUntil: editUntil}, hello, s.storeChat)
 }
 
 func (s *Server) getBoard(c *gin.Context) {

@@ -464,6 +464,7 @@ func (s *Server) cancelLesson(c *gin.Context) {
 		fail(c, 409, "Статус занятия изменился, обновите страницу")
 		return
 	}
+	s.hub.CloseLesson(l.ID)
 	s.hub.Broadcast(l.ID, map[string]any{"type": "lesson.status", "status": "cancelled"})
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -531,6 +532,7 @@ func (s *Server) endLesson(c *gin.Context) {
 		internal(c, err)
 		return
 	}
+	s.hub.CloseLesson(l.ID)
 	s.hub.Flush(l.ID)
 	s.hub.Broadcast(l.ID, map[string]any{"type": "lesson.status", "status": "completed"})
 	if s.lk != nil {

@@ -25,6 +25,7 @@ import { lessonTiming } from "@/lib/lessonTime";
 import { useLessonRealtime } from "@/lib/lessonSocket";
 import { Board } from "../board";
 import { CodePanel } from "../code";
+import { WorkshopPanel } from "../workshop";
 import { ConfirmModal, Modal, Spinner, toast } from "../ui";
 import { DeviceChoice, mediaErrorText } from "./PreJoin";
 
@@ -268,8 +269,9 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
   const isTeacher = detail.myRole === "teacher";
   const otherName = isTeacher ? lesson.studentName : lesson.teacherName;
   const rt = useLessonRealtime(lesson.id, true);
-  const [view, setView] = useState<"board" | "screen" | "code">("board");
+  const [view, setView] = useState<"board" | "screen" | "code" | "workshop">("board");
   const [codeOpened, setCodeOpened] = useState(false); // после первого открытия редактор остаётся смонтированным
+  const [workshopOpened, setWorkshopOpened] = useState(false); // то же для мастерской
   const [clearOpen, setClearOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [recOpen, setRecOpen] = useState(false);
@@ -291,6 +293,11 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
     setCodeOpened(true);
     setView("code");
   };
+  const openWorkshop = () => {
+    setWorkshopOpened(true);
+    setView("workshop");
+  };
+  const boardHidden = view === "code" || view === "workshop";
 
   const ended = rt.lessonStatus === "completed" || rt.lessonStatus === "cancelled";
   useEffect(() => {
@@ -415,7 +422,7 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
               }}
               className={`flex-1 rounded-lg py-2 text-sm font-medium ${mobileTab === t ? "bg-brand-600 text-white" : "bg-white text-muted"}`}
             >
-              {t === "board" ? (hasScreen ? "Доска / экран / код" : "Доска / код") : `Чат${unread ? ` (${unread})` : ""}`}
+              {t === "board" ? (hasScreen ? "Доска / экран / код" : "Доска / код / мастерская") : `Чат${unread ? ` (${unread})` : ""}`}
             </button>
           ))}
         </div>
@@ -439,8 +446,17 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
             >
               Код
             </button>
-            <div className={`mx-1 h-6 w-px shrink-0 bg-line ${view === "code" ? "hidden" : ""}`} />
-            <div className={`flex shrink-0 items-center gap-0.5 ${view === "code" ? "hidden" : ""}`} role="toolbar" aria-label="Инструменты доски">
+            <button
+              onClick={openWorkshop}
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-semibold ${view === "workshop" ? "bg-brand-600 text-white" : "text-muted"}`}
+              data-testid="tab-workshop"
+              title="Учебная мастерская: общий текст, разбор фрагментов, домашнее задание"
+            >
+              <span className="sm:hidden">Мастерская</span>
+              <span className="hidden sm:inline">Учебная мастерская</span>
+            </button>
+            <div className={`mx-1 h-6 w-px shrink-0 bg-line ${boardHidden ? "hidden" : ""}`} />
+            <div className={`flex shrink-0 items-center gap-0.5 ${boardHidden ? "hidden" : ""}`} role="toolbar" aria-label="Инструменты доски">
               {tools.map((t) => (
                 <button
                   key={t.type}
@@ -457,7 +473,7 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
               ))}
             </div>
             <div className="flex-1" />
-            <button className={`btn-ghost btn-sm shrink-0 text-red-600 ${view === "code" ? "hidden" : ""}`} onClick={() => setClearOpen(true)}>
+            <button className={`btn-ghost btn-sm shrink-0 text-red-600 ${boardHidden ? "hidden" : ""}`} onClick={() => setClearOpen(true)}>
               🗑️ Очистить
             </button>
           </div>
@@ -475,6 +491,11 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
             {codeOpened && (
               <div className={view === "code" ? "absolute inset-0" : "hidden"}>
                 <CodePanel lessonId={lesson.id} socket={rt.socket} status={rt.status} />
+              </div>
+            )}
+            {workshopOpened && (
+              <div className={view === "workshop" ? "absolute inset-0" : "hidden"}>
+                <WorkshopPanel lessonId={lesson.id} socket={rt.socket} status={rt.status} />
               </div>
             )}
           </div>
@@ -584,7 +605,7 @@ function ClassLayout({ detail, media, onEnded }: { detail: LessonDetail; media: 
           <div className="card max-w-sm p-6 text-center">
             <div className="mb-2 text-3xl">✅</div>
             <h2 className="text-lg font-semibold">{rt.lessonStatus === "cancelled" ? "Занятие отменено" : "Занятие завершено"}</h2>
-            <p className="mt-1 text-sm text-muted">Доска, чат, материалы и запись доступны на странице занятия.</p>
+            <p className="mt-1 text-sm text-muted">Доска, чат, материалы, опубликованные разборы и задания мастерской и запись доступны на странице занятия.</p>
             <Link href={`/lessons/${lesson.id}`} className="btn-primary mt-4 w-full">
               Перейти к занятию
             </Link>

@@ -205,6 +205,7 @@ export interface PublicConfig {
   maxUploadMB: number;
   joinEarlyMinutes: number;
   codeRunnerConfigured: boolean;
+  workshopAIConfigured?: boolean;
 }
 
 export interface ChatMessage {
@@ -261,4 +262,100 @@ export interface CodeInfo {
   runnerConfigured: boolean;
   lastRun: CodeRun | null;
   limits: { sourceBytes: number; stdinBytes: number; outputBytes: number; cpuSeconds: number; wallSeconds: number; memoryMb: number };
+}
+
+// ---- Учебная мастерская ----
+
+export type Verdict = "none" | "correct" | "acceptable" | "error" | "insufficient_data";
+
+export interface WorkshopSection {
+  heading: string;
+  body: string;
+}
+
+export interface WorkshopAnalysisContent {
+  verdict: Verdict;
+  sections: WorkshopSection[];
+}
+
+export interface WorkshopAction {
+  id: string;
+  label: string;
+  hint: string;
+  verdict: boolean;
+}
+
+export interface WorkshopMode {
+  id: string;
+  label: string;
+  description: string;
+  actions: WorkshopAction[];
+}
+
+export interface WorkshopLevel {
+  id: string;
+  label: string;
+}
+
+/** Разбор фрагмента. draft, model, createdAt — только у преподавателя (ученику сервер их не отдаёт). */
+export interface WorkshopAnalysis {
+  id: string;
+  mode: string;
+  action: string;
+  actionLabel: string;
+  level: string;
+  fragment: string;
+  published: WorkshopAnalysisContent | null;
+  publishedAt: string | null;
+  draft?: WorkshopAnalysisContent;
+  model?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WorkshopExercise {
+  title: string;
+  instruction: string;
+  content: string;
+}
+
+export interface WorkshopHomeworkContent {
+  review: string;
+  exercises: WorkshopExercise[];
+}
+
+export interface WorkshopAnswerKey {
+  answers: string[];
+  checkingTips: string;
+}
+
+/** Домашнее задание мастерской. draft, answerKey, sourceText — только у преподавателя. */
+export interface WorkshopHomework {
+  id: string;
+  mode: string;
+  level: string;
+  published: WorkshopHomeworkContent | null;
+  publishedAt: string | null;
+  draft?: WorkshopHomeworkContent;
+  answerKey?: WorkshopAnswerKey;
+  sourceText?: string;
+  model?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WorkshopState {
+  role: "teacher" | "student";
+  subject: string;
+  mode: string;
+  modes: WorkshopMode[];
+  levels: WorkshopLevel[];
+  editable: boolean;
+  closedReason: string;
+  analyses: WorkshopAnalysis[];
+  homework: WorkshopHomework[];
+  limits: { fragmentChars: number; homeworkTextChars: number };
+  /** Только у преподавателя */
+  suggestedMode?: string;
+  ai?: { configured: boolean; problem: string; noticeAccepted: boolean };
 }

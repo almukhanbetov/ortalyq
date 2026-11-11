@@ -116,6 +116,11 @@ services:
       CODE_RUNNER_URL: ${CODE_RUNNER_URL:-}
       CODE_RUNNER_TOKEN: ${CODE_RUNNER_TOKEN:-}
       CODE_RUNNER_PYTHON_ID: ${CODE_RUNNER_PYTHON_ID:-71}
+      # ИИ «Учебной мастерской» (docs/WORKSHOP.md). Пусто — функции ИИ недоступны, остальное работает.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-60}
     extra_hosts: ["host.docker.internal:host-gateway"]
     # 127.0.0.1:18080 — для вебхуков LiveKit (сеть хоста)
     ports: ["127.0.0.1:18080:18080"]

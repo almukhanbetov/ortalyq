@@ -87,6 +87,16 @@ Secret `ghcr-pull` — токен для скачивания образов и�
 
 Secret `ortalyq-code-runner` (необязательный) — адрес и ключ исполнителя кода, создаёт `set-code-runner.sh`. Без него редактор кода работает, запуск недоступен.
 
+Secret `ortalyq-openai` (необязательный) — `OPENAI_API_KEY` и `OPENAI_MODEL` для ИИ «Учебной мастерской» (docs/WORKSHOP.md). Без него мастерская работает без ИИ. Создание (ключ вводится скрыто и не попадает ни в историю оболочки, ни в аргументы процессов):
+
+```bash
+read -rsp "OPENAI_API_KEY: " k; echo; read -rp "OPENAI_MODEL: " m
+f=$(mktemp) && chmod 600 "$f" && printf 'OPENAI_API_KEY=%s\nOPENAI_MODEL=%s\n' "$k" "$m" > "$f" && unset k
+kubectl -n ortalyq create secret generic ortalyq-openai --from-env-file="$f" --dry-run=client -o yaml | kubectl apply -f -
+rm -f "$f"
+kubectl -n ortalyq rollout restart deployment/backend
+```
+
 Миграция `0004_code_editor` только добавляет таблицы `code_docs` и `code_runs`. Предыдущий образ backend на новой схеме работает (проверено), поэтому откат образа после неё безопасен.
 
 ## 3. GitHub: подготовка

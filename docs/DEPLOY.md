@@ -73,6 +73,7 @@ VPS
 | `deploy/k8s/scripts/backup-postgres.sh` | `pg_dump` в `/srv/ortalyq/backups` |
 | `deploy/nginx/*.conf`, `render-upstreams.sh` | Nginx только для двух новых поддоменов |
 | `deploy/k8s/scripts/set-code-runner.sh` | Подключение к отдельному серверу выполнения кода (Secret `ortalyq-code-runner`) |
+| `deploy/k8s/scripts/set-trusted-proxy.sh` | Адрес Nginx хоста как единственного доверенного прокси (ConfigMap `ortalyq-proxy`, `TRUSTED_PROXIES`) |
 | `deploy/code-runner/*` | Сервер выполнения кода (Judge0 + Caddy) — **отдельная VM**, не этот VPS; см. [CODE_RUNNER.md](CODE_RUNNER.md) |
 
 ### Секреты (только в кластере, не в Git)
@@ -199,6 +200,16 @@ cd /home/devops/ortalyq && git pull --ff-only origin main
    - Конфигурации проверены `nginx -t` на nginx 1.24 и 1.28. Директива `http2 on` не используется из-за 1.24.
    - Если `render-upstreams.sh` сообщает, что ClusterIP недоступен с хоста (бывает с некоторыми CNI и режимами kube-proxy), не продолжайте — пришлите вывод, подберём другой способ.
 
+   **Доверенный прокси (обязательно).** Бэкенд принимает адрес клиента из `X-Forwarded-For` только от адресов из `TRUSTED_PROXIES`; от остальных берёт адрес соединения. По этому адресу считаются ограничения входа, регистрации и пробного урока. Nginx хоста приходит в под с адреса, который зависит от CNI и режима kube-proxy, поэтому он определяется на узле:
+   ```bash
+   deploy/k8s/scripts/set-trusted-proxy.sh          # собственные проверочные запросы → один адрес → ConfigMap ortalyq-proxy → перезапуск backend → проверка
+   deploy/k8s/scripts/set-trusted-proxy.sh --check  # проверить в любой момент; --restore — вернуть прежнее значение; --remove — удалить
+   ```
+   - Нужен образ backend с поддержкой проверочного запроса (с выпуска «Пробный урок»). Запускайте после выката образов.
+   - Без этого шага подменить адрес нельзя, но все посетители выглядят одним адресом Nginx и делят лимиты (например, 30 попыток входа за 10 минут на всех). В журнале бэкенда тогда есть `forwarded client address ignored ... peer=<адрес>`.
+   - Доверяется ровно один адрес. Скрипт останавливается при неоднозначном результате и сам возвращает прежнее значение, если проверка после перезапуска не прошла. Адрес можно задать вручную: `set-trusted-proxy.sh 10.244.0.1` (только IP без маски). Бэкенд не запустится с `0.0.0.0/0`, `*` и сетями шире /8.
+   - Повторите после пересоздания кластерной сети или смены CNI. Nginx менять не нужно: `X-Real-IP $remote_addr` и `X-Forwarded-For $proxy_add_x_forwarded_for` уже передают настоящий адрес клиента крайним справа, а подставленное клиентом слева бэкенд пропускает.
+
 7. **Проверка:**
    ```bash
    curl -fsS https://ortalyq.compserv.cloud/api/ready
@@ -245,6 +256,37 @@ Actions → **Deploy** → Run workflow:
 Автоматическое развёртывание **не включено**. Чтобы включить его позже, добавьте в `deploy.yml` триггер `workflow_run` по завершении Images.
 
 **Перед выкатом с новыми миграциями** сделайте резервную копию: `deploy/k8s/scripts/backup-postgres.sh`.
+
+### Выпуск пробного урока (первый выкат с ним)
+
+Что меняется: миграция `0008_demo.sql` (новые таблицы `demo_rooms`, `demo_participants` — только добавление), ConfigMap `ortalyq-config` (`DEMO_*`), в Deployment backend — переменная `TRUSTED_PROXIES` из необязательного ConfigMap `ortalyq-proxy`. Сервисы, PV, Nginx и LiveKit не меняются, поэтому `render-upstreams.sh` не нужен (только если Service пересоздавали).
+
+1. Дождитесь зелёных **CI** и **Images** для SHA выпуска. Выберите время без идущих занятий.
+2. На VPS под devops:
+   ```bash
+   cd /home/devops/ortalyq && git pull --ff-only origin main && git log -1 --format=%H   # = SHA выпуска
+   deploy/k8s/scripts/backup-postgres.sh      # перед миграцией
+   deploy/k8s/scripts/apply.sh                # ConfigMap DEMO_* и env TRUSTED_PROXIES; образы сохраняются
+   ```
+   ConfigMap получает новое имя (хэш), поэтому `apply.sh` перезапустит **backend и LiveKit** (backend — со старым образом, новые переменные он не читает). Идущие видеозвонки прервутся — выполняйте вне занятий. Frontend не перезапускается.
+3. Actions → **Deploy** → `sha` = SHA выпуска, `action` = `deploy` (Job миграций → backend → frontend → проверка `/api/ready`).
+4. Сразу после выката (до этого все посетители делят лимиты адреса Nginx):
+   ```bash
+   deploy/k8s/scripts/set-trusted-proxy.sh
+   ```
+5. Проверка:
+   ```bash
+   curl -fsS https://ortalyq.compserv.cloud/api/ready
+   curl -fsS https://ortalyq.compserv.cloud/api/config    # "version" = SHA выпуска, "demo":{"enabled":true,"minutes":15,...}
+   deploy/k8s/scripts/set-trusted-proxy.sh --check
+   kubectl -n ortalyq logs deploy/backend --since=10m | grep -E 'level=(ERROR|WARN)'
+   ```
+   В браузере: `https://ortalyq.compserv.cloud/demo` → «Посмотреть самостоятельно» → «Продолжить без камеры и микрофона» → доска с примером, таймер; «Завершить демонстрацию» → экран «Демонстрация завершена». «Попробовать вдвоём» — ссылка открывается на втором устройстве, третий получает отказ. Обычный урок: вход в класс работает как раньше.
+6. Откат:
+   - образы: Actions → Deploy → `action` = `rollback` (или `deploy` с прошлым SHA). Таблицы демо остаются, старый образ их не использует;
+   - доверенный прокси: `deploy/k8s/scripts/set-trusted-proxy.sh --restore` (или `--remove`);
+   - манифесты обычно откатывать не нужно (старый образ не читает `DEMO_*` и `TRUSTED_PROXIES`); при необходимости: `git checkout <прошлый SHA> -- deploy/k8s && deploy/k8s/scripts/apply.sh && git checkout HEAD -- deploy/k8s`;
+   - выключить только пробный урок без отката образов: коммит с `DEMO_ENABLED=false` в `deploy/k8s/base/kustomization.yaml` → на VPS `git pull --ff-only origin main && deploy/k8s/scripts/apply.sh`.
 
 ### Изменение манифестов (ресурсы, ConfigMap, новые компоненты)
 
@@ -344,6 +386,7 @@ kubectl -n ortalyq delete secret ortalyq-deployer-token                 # ток
 **Требует сервера (не проверено):**
 - реальное применение в кластере: привязка local PV, Pod Security, права SA (`make-deployer-kubeconfig.sh` проверит их сам);
 - доступ Nginx хоста к ClusterIP (`render-upstreams.sh` проверит);
+- адрес, с которого Nginx приходит в под бэкенда (`set-trusted-proxy.sh` определит и проверит);
 - выпуск сертификатов;
 - WebRTC через firewall VPS;
 - запись Egress на ресурсах VPS;

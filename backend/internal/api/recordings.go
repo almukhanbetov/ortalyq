@@ -378,6 +378,9 @@ func (s *Server) livekitWebhook(c *gin.Context) {
 	if ev.EgressInfo != nil {
 		s.applyEgressInfo(c, ev.EgressInfo)
 	}
+	if ev.Room != nil {
+		s.demoVideoWebhook(ev.Event, ev.Room.Name) // только комнаты «demo-…»; уроки не затрагиваются
+	}
 	c.JSON(200, gin.H{"ok": true})
 }
 

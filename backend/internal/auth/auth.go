@@ -111,3 +111,8 @@ func (s *Signer) Verify(purpose, token string) (string, error) {
 	}
 	return string(payload), nil
 }
+
+// MAC — детерминированная подпись msg для назначения purpose (без срока действия). Используется, когда
+// токен должен совпадать при повторном запросе (ссылка-приглашение пробного урока), а срок
+// ограничивается состоянием объекта на сервере. Сравнивать с помощью hmac.Equal.
+func (s *Signer) MAC(purpose, msg string) string { return s.mac(purpose + "|" + msg) }

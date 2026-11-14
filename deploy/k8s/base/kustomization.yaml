@@ -42,3 +42,10 @@ configMapGenerator:
       - S3_USE_SSL=false
       - MAX_UPLOAD_MB=20
       - JOIN_EARLY_MINUTES=15
+      # Пробный урок (docs/TRIAL.md)
+      - DEMO_ENABLED=true
+      - DEMO_MINUTES=15
+      - DEMO_MAX_ACTIVE=30
+      - DEMO_PER_IP_PER_HOUR=6
+      - DEMO_CODE_RUNS=20
+      - DEMO_RETENTION_HOURS=24

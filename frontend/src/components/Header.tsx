@@ -27,6 +27,7 @@ export function Header() {
   const links: { href: string; label: string }[] = [
     { href: "/teachers", label: "Преподаватели" },
     { href: "/board", label: "Объявления" },
+    { href: "/demo", label: "Пробный урок" },
   ];
   if (user) {
     links.push({ href: "/dashboard", label: "Кабинет" });
@@ -61,6 +62,11 @@ export function Header() {
           ))}
         </nav>
         <div className="hidden items-center gap-2 md:flex">
+          {!active("/demo") && (
+            <Link href="/demo" className="btn-secondary btn-sm border-brand-300 text-brand-700" data-testid="header-try-demo">
+              ▶ Попробовать урок
+            </Link>
+          )}
           {loading ? null : user ? (
             <>
               <Link href="/profile" className="text-right text-sm leading-tight hover:text-brand-700">
@@ -82,6 +88,9 @@ export function Header() {
             </>
           )}
         </div>
+        <Link href="/demo" className="btn-secondary btn-sm ml-auto px-3 md:hidden" data-testid="header-try-demo-mobile">
+          ▶ Попробовать
+        </Link>
         <button
           className="btn-ghost -mr-2 md:hidden"
           aria-label={open ? "Закрыть меню" : "Открыть меню"}

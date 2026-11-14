@@ -27,6 +27,9 @@ export default function Home() {
             Видеокласс с интерактивной доской, записью урока и домашними заданиями. Всё в одном окне браузера — без установки программ.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
+            <Link href="/demo" className="btn bg-amber-300 px-6 py-3 text-ink shadow-lg hover:bg-amber-200" data-testid="home-try-demo">
+              ▶ Попробовать урок
+            </Link>
             <Link href="/teachers" className="btn bg-white px-6 py-3 text-brand-700 hover:bg-brand-50">
               Найти преподавателя
             </Link>
@@ -41,6 +44,21 @@ export default function Home() {
             )}
           </div>
         </div>
+      </section>
+
+      <section className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
+        <div className="text-3xl" aria-hidden>
+          🧪
+        </div>
+        <div className="flex-1">
+          <h2 className="text-lg font-semibold">Пробный урок — 15 минут без регистрации</h2>
+          <p className="mt-1 text-sm text-muted">
+            Видеосвязь, общая доска, совместный код и учебная мастерская в отдельном классе. Самостоятельно или вдвоём по ссылке. Бесплатно, без бронирования.
+          </p>
+        </div>
+        <Link href="/demo" className="btn-primary shrink-0">
+          Попробовать урок
+        </Link>
       </section>
 
       <section>

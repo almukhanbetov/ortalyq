@@ -76,5 +76,6 @@ func (s *Server) tick(ctx context.Context) {
 	}
 
 	s.refreshActiveRecordings(ctx, "")
+	s.demoSweep(ctx)
 	s.db.Exec(ctx, `DELETE FROM sessions WHERE expires_at < now()`)
 }

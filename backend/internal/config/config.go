@@ -62,6 +62,15 @@ type Config struct {
 	WorkshopAIPerMinute   int    // запросов к ИИ в минуту на преподавателя
 	WorkshopAIPerHour     int    // запросов к ИИ в час на урок
 
+	// Пробный урок (ознакомительная демонстрация класса без регистрации). Каждый запуск — отдельная
+	// временная комната; содержимое хранится только в памяти и удаляется при завершении.
+	DemoEnabled        bool
+	DemoMinutes        int // длительность демонстрации по серверному времени
+	DemoMaxActive      int // одновременно активных демонстраций на весь бэкенд
+	DemoPerIPPerHour   int // новых демонстраций с одного IP в час
+	DemoCodeRuns       int // запусков кода на одну демонстрацию (0 — запуск в демо выключен)
+	DemoRetentionHours int // через сколько часов после окончания удаляются служебные записи демонстрации
+
 	// Версия приложения для диагностики (APP_VERSION; иначе ревизия сборки из Go build info; иначе "dev").
 	AppVersion string
 }
@@ -150,6 +159,12 @@ func Load() (*Config, error) {
 		OpenAIMaxOutputTokens: envInt("OPENAI_MAX_OUTPUT_TOKENS", 4000),
 		WorkshopAIPerMinute:   envInt("WORKSHOP_AI_PER_MINUTE", 6),
 		WorkshopAIPerHour:     envInt("WORKSHOP_AI_PER_HOUR", 40),
+		DemoEnabled:           envBool("DEMO_ENABLED", true),
+		DemoMinutes:           envInt("DEMO_MINUTES", 15),
+		DemoMaxActive:         envInt("DEMO_MAX_ACTIVE", 30),
+		DemoPerIPPerHour:      envInt("DEMO_PER_IP_PER_HOUR", 6),
+		DemoCodeRuns:          envInt("DEMO_CODE_RUNS", 20),
+		DemoRetentionHours:    envInt("DEMO_RETENTION_HOURS", 24),
 		AppVersion:            Version(),
 	}
 	for _, o := range strings.Split(env("PUBLIC_ORIGINS", "http://localhost:13000"), ",") {
@@ -185,6 +200,11 @@ func Load() (*Config, error) {
 	c.OpenAIMaxOutputTokens = max(min(c.OpenAIMaxOutputTokens, 16000), 500)
 	c.WorkshopAIPerMinute = max(min(c.WorkshopAIPerMinute, 60), 1)
 	c.WorkshopAIPerHour = max(min(c.WorkshopAIPerHour, 1000), 1)
+	c.DemoMinutes = max(min(c.DemoMinutes, 60), 1)
+	c.DemoMaxActive = max(min(c.DemoMaxActive, 500), 1)
+	c.DemoPerIPPerHour = max(min(c.DemoPerIPPerHour, 100), 1)
+	c.DemoCodeRuns = max(min(c.DemoCodeRuns, 200), 0)
+	c.DemoRetentionHours = max(min(c.DemoRetentionHours, 24*30), 1)
 	return c, nil
 }
 

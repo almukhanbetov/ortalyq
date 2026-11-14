@@ -2,7 +2,8 @@
 
 // Загружается только в браузере (см. board/index.tsx).
 import "@excalidraw/excalidraw/index.css";
-import { CaptureUpdateAction, Excalidraw, MainMenu, exportToBlob, restoreElements } from "@excalidraw/excalidraw";
+import { CaptureUpdateAction, Excalidraw, MainMenu, convertToExcalidrawElements, exportToBlob, restoreElements } from "@excalidraw/excalidraw";
+import type { ExcalidrawElementSkeleton } from "@excalidraw/excalidraw/data/transform";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -52,6 +53,8 @@ export interface LiveBoardProps {
   onApi?: (api: ExcalidrawImperativeAPI) => void;
   /** Вызывается при смене активного инструмента */
   onToolChange?: (tool: string) => void;
+  /** Начальный пример (пробный урок): добавляется на пустую доску один раз по разрешению сервера */
+  seed?: () => ExcalidrawElementSkeleton[];
 }
 
 export interface ViewBoardProps {
@@ -67,7 +70,8 @@ export default function BoardCanvas(props: LiveBoardProps | ViewBoardProps) {
   return props.mode === "live" ? <LiveBoard {...props} /> : <ViewBoard {...props} />;
 }
 
-function LiveBoard({ socket, onRequestClear, readOnly, onApi: onApiProp, onToolChange }: LiveBoardProps) {
+function LiveBoard({ socket, onRequestClear, readOnly, onApi: onApiProp, onToolChange, seed }: LiveBoardProps) {
+  const seedAsked = useRef(false);
   const lastTool = useRef("");
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const known = useRef(new Map<string, number>()); // последняя синхронизированная версия элемента
@@ -117,20 +121,36 @@ function LiveBoard({ socket, onRequestClear, readOnly, onApi: onApiProp, onToolC
         }
         setSynced(true);
         if (pending.current.size) schedule();
+        if (seed && !seedAsked.current && !readOnly && !remote.some((e) => !e.isDeleted)) {
+          seedAsked.current = true;
+          socket?.send({ type: "board.seed" });
+        }
       }
       if (changed) {
         const elements = [...map.values()].sort(byIndex);
         api.updateScene({ elements, captureUpdate: CaptureUpdateAction.NEVER });
       }
     },
-    [schedule],
+    [schedule, seed, readOnly, socket],
   );
+
+  // Сервер разрешил вставить пример: добавляем элементы как обычные локальные изменения (уйдут через onChange).
+  const applySeed = useCallback(() => {
+    const api = apiRef.current;
+    if (!api || !seed) return;
+    const local = api.getSceneElementsIncludingDeleted() as readonly El[];
+    if (local.some((e) => !e.isDeleted)) return;
+    const added = convertToExcalidrawElements(seed(), { regenerateIds: true }) as El[];
+    api.updateScene({ elements: [...local, ...added], captureUpdate: CaptureUpdateAction.NEVER });
+    requestAnimationFrame(() => api.scrollToContent(undefined, { fitToViewport: true, viewportZoomFactor: 0.9, animate: false }));
+  }, [seed]);
 
   useEffect(() => {
     if (!socket) return;
     setSynced(false);
     const off = socket.on((m) => {
       if (m.type === "hello" || m.type === "board.snapshot" || m.type === "board.update") applyRemote(m);
+      if (m.type === "board.seed.grant") applySeed();
     });
     const offStatus = socket.onStatus((s) => {
       if (s !== "open") setSynced(false);
@@ -141,7 +161,7 @@ function LiveBoard({ socket, onRequestClear, readOnly, onApi: onApiProp, onToolC
       off();
       offStatus();
     };
-  }, [socket, applyRemote]);
+  }, [socket, applyRemote, applySeed]);
 
   const onApi = useCallback(
     (api: ExcalidrawImperativeAPI) => {

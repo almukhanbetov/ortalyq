@@ -124,6 +124,13 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-}
       OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-60}
+      # Пробный урок (docs/TRIAL.md)
+      DEMO_ENABLED: ${DEMO_ENABLED:-true}
+      DEMO_MINUTES: ${DEMO_MINUTES:-15}
+      DEMO_MAX_ACTIVE: ${DEMO_MAX_ACTIVE:-30}
+      DEMO_PER_IP_PER_HOUR: ${DEMO_PER_IP_PER_HOUR:-6}
+      DEMO_CODE_RUNS: ${DEMO_CODE_RUNS:-20}
+      DEMO_RETENTION_HOURS: ${DEMO_RETENTION_HOURS:-24}
     extra_hosts: ["host.docker.internal:host-gateway"]
     # 127.0.0.1:18080 — для вебхуков LiveKit (сеть хоста)
     ports: ["127.0.0.1:18080:18080"]

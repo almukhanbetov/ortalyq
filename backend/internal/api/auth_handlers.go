@@ -55,6 +55,18 @@ func (l *limiter) allow(key string, max int, window time.Duration) bool {
 	return true
 }
 
+// prune удаляет ключи без попыток за последние window (чтобы карта не росла бесконечно).
+func (l *limiter) prune(window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	for k, list := range l.hits {
+		if len(list) == 0 || now.Sub(list[len(list)-1]) >= window {
+			delete(l.hits, k)
+		}
+	}
+}
+
 func (s *Server) register(c *gin.Context) {
 	var req registerReq
 	if err := c.ShouldBindJSON(&req); err != nil {

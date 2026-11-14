@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,7 +74,13 @@ type ctxUser struct {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), requestID(), requestLogger(), securityHeaders(), serverTimeHeader())
+	// Адрес клиента (c.ClientIP) для ограничений частоты: X-Forwarded-For / X-Real-IP принимаются только
+	// от прокси из TRUSTED_PROXIES, иначе — адрес соединения. Gin по умолчанию доверяет всем — отключаем.
+	if err := r.SetTrustedProxies(s.cfg.TrustedProxies); err != nil {
+		slog.Error("TRUSTED_PROXIES: not applied, trusting no proxies", "err", err)
+		_ = r.SetTrustedProxies(nil)
+	}
+	r.Use(gin.Recovery(), requestID(), untrustedForwardWarning(s.cfg.TrustedProxies), requestLogger(), securityHeaders(), serverTimeHeader())
 	r.MaxMultipartMemory = 8 << 20
 
 	// /api/health — процесс жив (liveness); /api/ready — есть связь с БД (readiness).
@@ -203,6 +211,82 @@ func (s *Server) Router() *gin.Engine {
 
 	r.NoRoute(func(c *gin.Context) { c.JSON(404, gin.H{"error": "Не найдено"}) })
 	return r
+}
+
+// ProxyProbeHeader — проверочный запрос deploy/k8s/scripts/set-trusted-proxy.sh: значение (метка из 16–64
+// шестнадцатеричных символов) и адрес соединения пишутся в журнал строкой «proxy probe». Так скрипт находит
+// адрес своего собственного запроса, а не случайную старую строку журнала. Ответ клиенту не меняется;
+// записей не больше 20 в минуту на весь сервер.
+const ProxyProbeHeader = "X-Ortalyq-Proxy-Probe"
+
+var proxyProbeLimiter = &limiter{hits: map[string][]time.Time{}}
+
+func isProbeMark(v string) bool {
+	if len(v) < 16 || len(v) > 64 {
+		return false
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// untrustedForwardWarning один раз на адрес пишет в журнал, что заголовок X-Forwarded-For / X-Real-IP пришёл
+// от адреса не из TRUSTED_PROXIES и проигнорирован. Если это ваш прокси (Nginx/Caddy), добавьте адрес в
+// TRUSTED_PROXIES — иначе все клиенты за ним делят один лимит. Если это клиент, пытающийся подменить IP, — ничего
+// делать не нужно. Само сообщение адресов клиентов не содержит, только адрес соединения.
+// Здесь же обрабатывается проверочный запрос ProxyProbeHeader.
+func untrustedForwardWarning(trusted []string) gin.HandlerFunc {
+	var nets []*net.IPNet
+	for _, t := range trusted {
+		if !strings.Contains(t, "/") {
+			if strings.Contains(t, ":") {
+				t += "/128"
+			} else {
+				t += "/32"
+			}
+		}
+		if _, n, err := net.ParseCIDR(t); err == nil {
+			nets = append(nets, n)
+		}
+	}
+	isTrusted := func(peer string) bool {
+		ip := net.ParseIP(peer)
+		for _, n := range nets {
+			if ip != nil && n.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	return func(c *gin.Context) {
+		h := c.Request.Header
+		if mark := h.Get(ProxyProbeHeader); mark != "" && isProbeMark(mark) && proxyProbeLimiter.allow("probe", 20, time.Minute) {
+			peer := c.RemoteIP()
+			// Адрес клиента в журнал не пишется: только принят ли адрес из заголовка (forwarded_used).
+			slog.Info("proxy probe", "probe", mark, "peer", peer, "trusted", isTrusted(peer), "forwarded_used", c.ClientIP() != peer)
+		}
+		if h.Get("X-Forwarded-For") == "" && h.Get("X-Real-IP") == "" {
+			c.Next()
+			return
+		}
+		if peer := c.RemoteIP(); !isTrusted(peer) {
+			mu.Lock()
+			first := !seen[peer] && len(seen) < 64
+			if first {
+				seen[peer] = true
+			}
+			mu.Unlock()
+			if first {
+				slog.Warn("forwarded client address ignored: peer is not in TRUSTED_PROXIES (add it if this is your reverse proxy)", "peer", peer)
+			}
+		}
+		c.Next()
+	}
 }
 
 func requestLogger() gin.HandlerFunc {

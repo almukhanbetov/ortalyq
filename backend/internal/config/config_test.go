@@ -91,3 +91,31 @@ func TestAIConfig(t *testing.T) {
 		t.Fatal("ключ не должен попадать в сообщения")
 	}
 }
+
+func TestParseTrustedProxies(t *testing.T) {
+	got, err := ParseTrustedProxies(" 127.0.0.1, ::1 ,10.244.0.0/24,172.18.0.0/16, none,")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "127.0.0.1,::1,10.244.0.0/24,172.18.0.0/16" {
+		t.Fatalf("got %v", got)
+	}
+	if got, err := ParseTrustedProxies(""); err != nil || len(got) != 0 {
+		t.Fatalf("пусто: %v %v", got, err)
+	}
+	for _, bad := range []string{"*", "0.0.0.0/0", "::/0", "10.0.0.0/7", "2001::/8", "nginx", "10.0.0.0/33"} {
+		if _, err := ParseTrustedProxies(bad); err == nil {
+			t.Errorf("%q должен быть отклонён", bad)
+		}
+	}
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("APP_SECRET", strings.Repeat("s", 32))
+	c, err := Load()
+	if err != nil || strings.Join(c.TrustedProxies, ",") != "127.0.0.1,::1" {
+		t.Fatalf("по умолчанию — только loopback: %v %v", c, err)
+	}
+	t.Setenv("TRUSTED_PROXIES", "0.0.0.0/0")
+	if _, err := Load(); err == nil {
+		t.Fatal("доверие всем адресам должно останавливать запуск")
+	}
+}

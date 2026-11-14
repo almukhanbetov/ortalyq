@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -70,6 +71,11 @@ type Config struct {
 	DemoPerIPPerHour   int // новых демонстраций с одного IP в час
 	DemoCodeRuns       int // запусков кода на одну демонстрацию (0 — запуск в демо выключен)
 	DemoRetentionHours int // через сколько часов после окончания удаляются служебные записи демонстрации
+
+	// Адреса прокси (IP или CIDR), которым разрешено сообщать адрес клиента в X-Forwarded-For / X-Real-IP
+	// (TRUSTED_PROXIES, через запятую). От остальных заголовки игнорируются и берётся адрес соединения.
+	// По умолчанию — только loopback (dev-прокси Next.js на этой же машине). Доверие «всем» не допускается.
+	TrustedProxies []string
 
 	// Версия приложения для диагностики (APP_VERSION; иначе ревизия сборки из Go build info; иначе "dev").
 	AppVersion string
@@ -172,6 +178,11 @@ func Load() (*Config, error) {
 			c.PublicOrigins = append(c.PublicOrigins, o)
 		}
 	}
+	tp, err := ParseTrustedProxies(env("TRUSTED_PROXIES", "127.0.0.1,::1"))
+	if err != nil {
+		return nil, err
+	}
+	c.TrustedProxies = tp
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
@@ -206,6 +217,38 @@ func Load() (*Config, error) {
 	c.DemoCodeRuns = max(min(c.DemoCodeRuns, 200), 0)
 	c.DemoRetentionHours = max(min(c.DemoRetentionHours, 24*30), 1)
 	return c, nil
+}
+
+// ParseTrustedProxies разбирает список доверенных прокси «IP или CIDR через запятую». Слишком широкие
+// сети (короче /8 для IPv4 и /16 для IPv6, в том числе 0.0.0.0/0) и «*» отклоняются: доверие ко всем
+// адресам позволило бы любому клиенту подставить чужой IP и обойти ограничения частоты.
+// Пустая строка или «none» — не доверять никому (всегда адрес соединения).
+func ParseTrustedProxies(s string) ([]string, error) {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" || strings.EqualFold(v, "none") {
+			continue
+		}
+		if !strings.Contains(v, "/") {
+			ip := net.ParseIP(v)
+			if ip == nil {
+				return nil, fmt.Errorf("TRUSTED_PROXIES: %q is not an IP address or CIDR", v)
+			}
+			out = append(out, ip.String())
+			continue
+		}
+		_, n, err := net.ParseCIDR(v)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES: %q is not an IP address or CIDR", v)
+		}
+		ones, bits := n.Mask.Size()
+		if (bits == 32 && ones < 8) || (bits == 128 && ones < 16) {
+			return nil, fmt.Errorf("TRUSTED_PROXIES: network %q is too broad; list only the addresses of your own proxies", v)
+		}
+		out = append(out, n.String())
+	}
+	return out, nil
 }
 
 // buildVersion задаётся при сборке образа: -ldflags "-X ortalyq/backend/internal/config.buildVersion=<SHA>"

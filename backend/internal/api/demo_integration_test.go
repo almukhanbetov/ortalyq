@@ -46,7 +46,9 @@ func setupDemo(t *testing.T, mut func(*config.Config)) *denv {
 	cfg := &config.Config{AppSecret: strings.Repeat("d", 32), PublicOrigins: []string{"http://test.local"}, JoinEarlyMinutes: 15,
 		CodeRunCPUSeconds: 2, CodeRunWallSeconds: 5, CodeRunMemoryMB: 128, CodeRunMaxConcurrent: 4, CodeRunnerPythonID: 71,
 		WorkshopAIPerMinute: 10, WorkshopAIPerHour: 100,
-		DemoEnabled: true, DemoMinutes: 15, DemoMaxActive: 30, DemoPerIPPerHour: 50, DemoCodeRuns: 2, DemoRetentionHours: 24}
+		DemoEnabled: true, DemoMinutes: 15, DemoMaxActive: 30, DemoPerIPPerHour: 50, DemoCodeRuns: 2, DemoRetentionHours: 24,
+		// httptest-сервер слушает loopback: тест играет роль доверенного прокси и задаёт адрес «браузера» в X-Forwarded-For.
+		TrustedProxies: []string{"127.0.0.1", "::1"}}
 	if mut != nil {
 		mut(cfg)
 	}

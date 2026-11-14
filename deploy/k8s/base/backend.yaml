@@ -79,6 +79,12 @@ spec:
               valueFrom: {secretKeyRef: {name: ortalyq-openai, key: OPENAI_API_KEY, optional: true}}
             - name: OPENAI_MODEL
               valueFrom: {secretKeyRef: {name: ortalyq-openai, key: OPENAI_MODEL, optional: true}}
+            # Адрес, с которого Nginx хоста приходит в под (через ClusterIP). Только от него принимается
+            # X-Forwarded-For — иначе ограничения частоты (вход, регистрация, пробный урок) можно обойти
+            # подменой заголовка. ConfigMap создаёт ../scripts/set-trusted-proxy.sh (определяет адрес на узле).
+            # Пока его нет — доверие только loopback: подмена невозможна, но все клиенты делят лимиты адреса Nginx.
+            - name: TRUSTED_PROXIES
+              valueFrom: {configMapKeyRef: {name: ortalyq-proxy, key: TRUSTED_PROXIES, optional: true}}
           ports:
             - {name: http, containerPort: 18080}
           startupProbe:

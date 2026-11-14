@@ -24,6 +24,7 @@ interface OwnLesson {
   status: string;
   cancelReason: string;
   alwaysOpen: boolean;
+  isTrial?: boolean;
   list: "upcoming" | "history";
   explanation: string;
   canEnter: boolean;
@@ -189,7 +190,7 @@ function LessonState({ l, tz }: { l: OwnLesson; tz: string }) {
       <div className="text-sm">
         {l.subject} · {l.myRole === "student" ? "преподаватель" : "ученик"}: {l.otherName}
       </div>
-      <div className="text-sm text-muted">{l.alwaysOpen ? "Демо-класс, открыт всегда" : formatRange(l.startsAt, l.endsAt, tz)}</div>
+      <div className="text-sm text-muted">{l.isTrial ? "Бесплатный ознакомительный урок" : l.alwaysOpen ? "Демо-класс, открыт всегда" : formatRange(l.startsAt, l.endsAt, tz)}</div>
       <div className="mt-2 flex flex-wrap gap-2">{actions}</div>
     </li>
   );

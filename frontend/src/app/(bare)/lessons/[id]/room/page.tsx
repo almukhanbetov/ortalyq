@@ -11,6 +11,7 @@ import { ClassRoom, JoinInfo } from "@/components/room/ClassRoom";
 import { DeviceChoice, PreJoin } from "@/components/room/PreJoin";
 import { Loading } from "@/components/ui";
 import { LessonCheckButton } from "@/components/LessonCheck";
+import { TRIAL_LABEL } from "@/components/TrialLesson";
 
 function Message({ title, text, lessonId }: { title: string; text: string; lessonId: string }) {
   return (
@@ -40,12 +41,20 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
   const [joinError, setJoinError] = useState("");
   const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => {
-    if (!ready) return;
+  const load = useCallback(() => {
     api<LessonDetail>(`/api/lessons/${id}`)
       .then(setDetail)
       .catch((e) => setError(errorMessage(e)));
-  }, [ready, id]);
+  }, [id]);
+  useEffect(() => {
+    if (ready) load();
+  }, [ready, load]);
+  // Сведения об уроке без перезагрузки класса (ученик присоединился к ознакомительному уроку)
+  const reloadDetail = useCallback(() => {
+    api<LessonDetail>(`/api/lessons/${id}`)
+      .then(setDetail)
+      .catch(() => {});
+  }, [id]);
 
   const getToken = useCallback(async () => {
     const r = await api<JoinInfo>(`/api/lessons/${id}/join`, { method: "POST" });
@@ -103,15 +112,20 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
         devices={null}
         videoProblem="сервер LiveKit не настроен (LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET — см. README)."
         onRejoin={() => {}}
+        onDetailChanged={reloadDetail}
       />
     );
 
   if (!join || !devices) {
-    const other = detail.myRole === "teacher" ? detail.lesson.studentName : detail.lesson.teacherName;
+    const other = detail.myRole === "teacher" ? detail.lesson.studentName || "ученик ещё не присоединился" : detail.lesson.teacherName;
     return (
       <PreJoin
         title={`${l.subject} · ${other}`}
-        subtitle={`${formatTime(l.startsAt, tz)}–${formatTime(l.endsAt, tz)}${lessonTiming(l) ? ` · ${lessonTiming(l)}` : ""}`}
+        subtitle={
+          l.isTrial
+            ? `${TRIAL_LABEL} · начат в ${formatTime(l.startedAt ?? l.startsAt, tz)}`
+            : `${formatTime(l.startsAt, tz)}–${formatTime(l.endsAt, tz)}${lessonTiming(l) ? ` · ${lessonTiming(l)}` : ""}`
+        }
         onJoin={onJoin}
         joining={joining}
         joinError={joinError}
@@ -119,5 +133,5 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
       />
     );
   }
-  return <ClassRoom key={attempt} detail={detail} join={join} devices={devices} onRejoin={onRejoin} />;
+  return <ClassRoom key={attempt} detail={detail} join={join} devices={devices} onRejoin={onRejoin} onDetailChanged={reloadDetail} />;
 }

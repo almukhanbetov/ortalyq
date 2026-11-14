@@ -212,7 +212,7 @@ func (s *Server) teacherSlots(c *gin.Context) {
 		internal(c, err)
 		return
 	}
-	busy, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled' AND ends_at > $2 AND starts_at < $3`, id, now, horizon.Add(24*time.Hour))
+	busy, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled' AND NOT is_trial AND ends_at > $2 AND starts_at < $3`, id, now, horizon.Add(24*time.Hour))
 	if err != nil {
 		internal(c, err)
 		return
@@ -220,7 +220,7 @@ func (s *Server) teacherSlots(c *gin.Context) {
 	mine := []gin.H{}
 	withTeacher := []gin.H{}
 	if u := currentUser(c); u != nil && u.Role == "student" {
-		own, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled' AND ends_at > $2 AND starts_at < $3`, u.ID, now, horizon.Add(24*time.Hour))
+		own, err := s.spans(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled' AND NOT is_trial AND ends_at > $2 AND starts_at < $3`, u.ID, now, horizon.Add(24*time.Hour))
 		if err != nil {
 			internal(c, err)
 			return
@@ -230,7 +230,7 @@ func (s *Server) teacherSlots(c *gin.Context) {
 		}
 		// Предстоящие уроки этого ученика у этого преподавателя — только свои (без данных других учеников),
 		// с теми же условиями, что и «Мои занятия» → «Предстоящие».
-		rows, err := s.db.Query(c, `SELECT id, subject, starts_at, ends_at, status, always_open FROM lessons
+		rows, err := s.db.Query(c, `SELECT id, subject, starts_at, ends_at, status, always_open, is_trial FROM lessons
 			WHERE student_id=$1 AND teacher_id=$2 AND status IN ('scheduled','live') AND (always_open OR ends_at > $3)
 			ORDER BY always_open DESC, starts_at LIMIT 20`, u.ID, id, now)
 		if err != nil {
@@ -240,13 +240,13 @@ func (s *Server) teacherSlots(c *gin.Context) {
 		for rows.Next() {
 			var lid, subject, status string
 			var st, en time.Time
-			var open bool
-			if err := rows.Scan(&lid, &subject, &st, &en, &status, &open); err != nil {
+			var open, trial bool
+			if err := rows.Scan(&lid, &subject, &st, &en, &status, &open, &trial); err != nil {
 				rows.Close()
 				internal(c, err)
 				return
 			}
-			withTeacher = append(withTeacher, gin.H{"id": lid, "subject": subject, "startsAt": st, "endsAt": en, "status": status, "alwaysOpen": open})
+			withTeacher = append(withTeacher, gin.H{"id": lid, "subject": subject, "startsAt": st, "endsAt": en, "status": status, "alwaysOpen": open, "isTrial": trial})
 		}
 		rows.Close()
 	}

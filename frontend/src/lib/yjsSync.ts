@@ -6,8 +6,6 @@
 //   → <p>.update {update, cid}      ← <p>.ack {cid, seq}; остальным: <p>.update {update, seq}
 //   ← <p>.compact.request {upTo}    → <p>.compact {upTo, state}
 //   ← <p>.reject {cid, message, locked?}
-//   → <p>.seed                      ← <p>.seed.grant  (только пробный урок: разрешение одному клиенту
-//                                     вставить начальный пример в пустой документ)
 //
 // Петли нет: обновления, применённые из сети, помечаются origin=REMOTE и не отправляются обратно.
 // Потерь нет: после каждого (пере)подключения клиент получает журнал сервера и досылает разницу
@@ -16,8 +14,6 @@ import * as Y from "yjs";
 import type { LessonSocket, ServerMessage } from "@/lib/lessonSocket";
 
 export const REMOTE = Symbol("remote");
-/** Origin начального примера пробного урока (локальное изменение — отправляется на сервер). */
-export const SEED = Symbol("seed");
 
 export function toB64(u: Uint8Array): string {
   let s = "";
@@ -63,10 +59,7 @@ export class YjsSync {
     private onState: (s: SyncState) => void,
     private onReject: (message: string) => void,
     private onReadOnly?: (readOnly: boolean) => void,
-    /** Начальный пример для пустого документа (пробный урок). Вставляется только после разрешения сервера. */
-    private seed?: (doc: Y.Doc) => void,
   ) {}
-  private seedAsked = false;
 
   start() {
     const onUpdate = (u: Uint8Array, origin: unknown) => {
@@ -154,18 +147,8 @@ export class YjsSync {
         server.destroy();
         this.setState("synced");
         this.flush();
-        if (this.seed && !this.seedAsked && !this.readOnly && updates.length === 0 && (m.seq ?? 0) === 0) {
-          this.seedAsked = true;
-          this.socket.send({ type: `${p}.seed` });
-        }
         break;
       }
-      case `${p}.seed.grant`:
-        if (this.seed && this.state === "synced") {
-          const seed = this.seed;
-          Y.transact(this.doc, () => seed(this.doc), SEED);
-        }
-        break;
       case `${p}.update`:
         this.apply([m.update]);
         this.lastSeq = Math.max(this.lastSeq, m.seq ?? 0);

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { StartTrialButton, TRIAL_LABEL } from "@/components/TrialLesson";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson, Teacher } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
@@ -78,7 +79,8 @@ export default function Dashboard() {
         subtitle={isTeacher ? "Кабинет преподавателя" : "Кабинет ученика"}
         action={
           isTeacher ? (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-start gap-2">
+              <StartTrialButton />
               <Link href="/availability" className="btn-secondary">Расписание</Link>
               <Link href="/profile" className="btn-secondary">Профиль</Link>
               <LessonCheckButton className="btn-secondary" />
@@ -111,9 +113,11 @@ export default function Dashboard() {
                 <span className="h-2 w-2 rounded-full bg-emerald-300" /> Виртуальный класс открыт
               </div>
               <h2 className="text-xl font-bold sm:text-2xl">
-                {openNow.subject} · {isTeacher ? openNow.studentName : openNow.teacherName}
+                {openNow.subject} · {isTeacher ? openNow.studentName || "ученик ещё не присоединился" : openNow.teacherName}
               </h2>
-              <p className="mt-1 text-sm text-white/80">Видео, общая доска, чат и запись урока — в одном окне.</p>
+              <p className="mt-1 text-sm text-white/80">
+                {openNow.isTrial ? `${TRIAL_LABEL} — идёт, пока вы его не завершите. ` : ""}Видео, общая доска, чат и запись урока — в одном окне.
+              </p>
             </div>
             <Link href={`/lessons/${openNow.id}/room`} className="btn bg-white px-7 py-4 text-base text-brand-700 hover:bg-brand-50">
               🎥 Войти в класс

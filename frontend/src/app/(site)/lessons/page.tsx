@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { StartTrialButton } from "@/components/TrialLesson";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, Lesson } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
@@ -74,7 +75,16 @@ export default function LessonsPage() {
       <PageHeader
         title="Мои занятия"
         subtitle={`Вход в виртуальный класс, расписание и история уроков · время указано в часовом поясе ${tzLabel(tz)}`}
-        action={<LessonCheckButton className="btn-secondary" />}
+        action={
+          user?.role === "teacher" ? (
+            <div className="flex flex-wrap items-start gap-2">
+              <StartTrialButton />
+              <LessonCheckButton className="btn-secondary" />
+            </div>
+          ) : (
+            <LessonCheckButton className="btn-secondary" />
+          )
+        }
       />
       <div className="mb-6 inline-flex rounded-xl border border-line bg-white p-1">
         {tabs.map(([t, label]) => (

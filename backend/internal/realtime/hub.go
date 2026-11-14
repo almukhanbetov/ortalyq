@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,19 +37,6 @@ type element struct {
 	raw  json.RawMessage
 }
 
-// EphemeralPrefix — префикс ключа временной комнаты (пробный урок). Такая комната живёт только в памяти:
-// ничего не читается из БД и не сохраняется в неё (таблицы досок и документов ссылаются на уроки),
-// и она не удаляется, когда участники вышли, — до явного Release. Ключ урока — UUID без префикса,
-// поэтому ключи уроков и временных комнат не пересекаются.
-const EphemeralPrefix = "demo:"
-
-// Ограничения временной комнаты: её создают анонимные посетители, поэтому объём доски ограничен
-// отдельно (у уроков — только число и размер элементов).
-const (
-	ephemeralBoardBytes = 4 << 20
-	ephemeralMaxClients = 6
-)
-
 type Client struct {
 	UserID string
 	Name   string
@@ -61,7 +47,6 @@ type Client struct {
 	conn      *websocket.Conn
 	mu        sync.Mutex
 	closed    bool
-	kicked    bool // соединение закрыто сервером (комната освобождена), а не из-за медленного чтения
 }
 
 type room struct {
@@ -75,11 +60,6 @@ type room struct {
 	code     *codeState // документ редактора кода
 	workshop *codeState // учебный текст мастерской (отдельный документ)
 	closed   bool       // урок завершён/отменён: правки учебного текста запрещены
-
-	ephemeral  bool            // временная комната (EphemeralPrefix): только в памяти
-	boardBytes int             // суммарный размер элементов доски (учитывается во временной комнате)
-	seeds      map[string]bool // выданные разрешения на начальный пример (доска, код, текст) — по одному на вид
-	released   bool            // комната освобождена: новые изменения не принимаются
 }
 
 type Hub struct {
@@ -150,12 +130,6 @@ func (h *Hub) getRoom(ctx context.Context, lessonID string) *room {
 	if r, ok := h.rooms[lessonID]; ok {
 		return r
 	}
-	if strings.HasPrefix(lessonID, EphemeralPrefix) {
-		r := &room{id: lessonID, clients: map[*Client]bool{}, elements: map[string]*element{}, code: &codeState{}, workshop: &codeState{},
-			ephemeral: true, seeds: map[string]bool{}}
-		h.rooms[lessonID] = r
-		return r
-	}
 	els, order, rev := h.loadBoard(ctx, lessonID)
 	r := &room{id: lessonID, clients: map[*Client]bool{}, elements: els, order: order, revision: rev,
 		code: h.loadDoc(ctx, codeKind, lessonID), workshop: h.loadDoc(ctx, workshopKind, lessonID)}
@@ -174,11 +148,6 @@ func (r *room) snapshotLocked() []byte {
 
 func (h *Hub) persist(r *room) {
 	r.mu.Lock()
-	if r.ephemeral {
-		r.dirty = false
-		r.mu.Unlock()
-		return
-	}
 	if !r.dirty {
 		r.mu.Unlock()
 		return
@@ -295,11 +264,6 @@ func (h *Hub) Serve(ctx context.Context, conn *websocket.Conn, lessonID string, 
 	r := h.getRoom(ctx, lessonID)
 
 	r.mu.Lock()
-	if r.released || (r.ephemeral && len(r.clients) >= ephemeralMaxClients) {
-		r.mu.Unlock()
-		conn.Close(websocket.StatusPolicyViolation, "room unavailable")
-		return
-	}
 	r.clients[c] = true
 	hello["type"] = "hello"
 	hello["board"] = map[string]any{"elements": json.RawMessage(r.snapshotLocked()), "revision": r.revision}
@@ -332,7 +296,7 @@ func (h *Hub) Serve(ctx context.Context, conn *websocket.Conn, lessonID string, 
 		o.enqueue(pres)
 	}
 	r.mu.Unlock()
-	if empty && !r.ephemeral {
+	if empty {
 		h.persist(r)
 		h.persistDocs(r)
 		h.mu.Lock()
@@ -355,14 +319,7 @@ func (h *Hub) writer(ctx context.Context, c *Client) {
 			return
 		case b, ok := <-c.send:
 			if !ok {
-				c.mu.Lock()
-				kicked := c.kicked
-				c.mu.Unlock()
-				if kicked {
-					c.conn.Close(websocket.StatusNormalClosure, "room closed")
-				} else {
-					c.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
-				}
+				c.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
 				return
 			}
 			wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -413,8 +370,6 @@ func (h *Hub) handle(ctx context.Context, r *room, c *Client, data []byte, chat 
 		b, _ := json.Marshal(map[string]any{"type": "board.snapshot", "board": map[string]any{"elements": json.RawMessage(r.snapshotLocked()), "revision": r.revision}})
 		r.mu.Unlock()
 		c.enqueue(b)
-	case "board.seed", "code.seed", "workshop.seed":
-		h.grantSeed(r, c, msg.Type[:len(msg.Type)-len(".seed")])
 	case "code.sync":
 		h.docSync(r, codeKind, c)
 	case "code.update":
@@ -450,9 +405,6 @@ func (h *Hub) handle(ctx context.Context, r *room, c *Client, data []byte, chat 
 func (h *Hub) applyBoard(r *room, from *Client, incoming []json.RawMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.released {
-		return
-	}
 	accepted := make([]json.RawMessage, 0, len(incoming))
 	for _, raw := range incoming {
 		if len(raw) > maxElementBytes {
@@ -467,21 +419,10 @@ func (h *Hub) applyBoard(r *room, from *Client, incoming []json.RawMessage) {
 			if m.Version < cur.meta.Version || (m.Version == cur.meta.Version && m.VersionNonce >= cur.meta.VersionNonce) {
 				continue
 			}
-		}
-		if !exists && len(r.order) >= maxElements {
-			continue
-		}
-		if r.ephemeral {
-			old := 0
-			if exists {
-				old = len(cur.raw)
-			}
-			if r.boardBytes-old+len(raw) > ephemeralBoardBytes {
+		} else {
+			if len(r.order) >= maxElements {
 				continue
 			}
-			r.boardBytes += len(raw) - old
-		}
-		if !exists {
 			r.order = append(r.order, m.ID)
 		}
 		cp := make(json.RawMessage, len(raw))
@@ -544,97 +485,4 @@ func truncID(s string) string {
 		return s[:64]
 	}
 	return s
-}
-
-// grantSeed разрешает одному клиенту временной комнаты добавить начальный пример (kind: board, code, workshop):
-// пока содержимое пусто и разрешение этого вида ещё никому не выдано. Сам пример создаёт клиент —
-// так два участника, открывшие вкладку одновременно, не вставят его дважды. В комнатах уроков не действует.
-func (h *Hub) grantSeed(r *room, c *Client, kind string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.ephemeral || r.released || r.seeds[kind] {
-		return
-	}
-	switch kind {
-	case "board":
-		for _, e := range r.elements {
-			if !e.meta.IsDeleted {
-				return
-			}
-		}
-	case "code":
-		if r.code.seq != 0 {
-			return
-		}
-	case "workshop":
-		if r.workshop.seq != 0 {
-			return
-		}
-	default:
-		return
-	}
-	r.seeds[kind] = true
-	c.sendJSON(map[string]any{"type": kind + ".seed.grant"})
-}
-
-// Release освобождает временную комнату: отправляет участникам последнее сообщение (если задано),
-// закрывает их соединения и удаляет состояние (доска, код, текст) из памяти. Для комнат уроков не действует.
-func (h *Hub) Release(key string, last any) {
-	if !strings.HasPrefix(key, EphemeralPrefix) {
-		return
-	}
-	var b []byte
-	if last != nil {
-		b, _ = json.Marshal(last)
-	}
-	h.mu.Lock()
-	r := h.rooms[key]
-	delete(h.rooms, key)
-	h.mu.Unlock()
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	r.released = true
-	for c := range r.clients {
-		if b != nil {
-			c.enqueue(b)
-		}
-		c.kick()
-	}
-	r.clients = map[*Client]bool{}
-	r.elements, r.order = map[string]*element{}, nil
-	r.code, r.workshop = &codeState{}, &codeState{}
-	r.mu.Unlock()
-}
-
-// EphemeralKeys — ключи временных комнат в памяти (для проверки, что освобождены все завершённые).
-func (h *Hub) EphemeralKeys() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var out []string
-	for k, r := range h.rooms {
-		if r.ephemeral {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-// HasRoom — есть ли комната с таким ключом в памяти (тесты, диагностика).
-func (h *Hub) HasRoom(key string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	_, ok := h.rooms[key]
-	return ok
-}
-
-func (c *Client) kick() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.closed {
-		c.closed = true
-		c.kicked = true
-		close(c.send)
-	}
 }

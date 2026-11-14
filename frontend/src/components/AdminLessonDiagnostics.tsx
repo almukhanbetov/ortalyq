@@ -36,6 +36,7 @@ interface Report {
   cancelReason: string;
   isDemo: boolean;
   alwaysOpen: boolean;
+  isTrial?: boolean;
   startsAtUtc: string;
   endsAtUtc: string;
   createdAt: string;
@@ -104,7 +105,7 @@ export function AdminLessonDiagnostics({ initialId = "", compact = false }: { in
             </div>
             <div className="text-muted">
               Статус: {report.status}
-              {report.cancelReason && ` (${report.cancelReason})`} · демо: {report.isDemo ? "да" : "нет"} · {utc(report.startsAtUtc)} – {utc(report.endsAtUtc).slice(11)}
+              {report.cancelReason && ` (${report.cancelReason})`} · демо: {report.isDemo ? "да" : "нет"}{report.isTrial ? " · бесплатный ознакомительный" : ""} · {utc(report.startsAtUtc)} – {utc(report.endsAtUtc).slice(11)}
             </div>
             <div className="text-xs text-muted">
               Создано {utc(report.createdAt)} · сервер сейчас {utc(report.serverTime)}

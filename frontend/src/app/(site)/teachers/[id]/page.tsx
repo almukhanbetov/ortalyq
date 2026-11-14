@@ -418,7 +418,7 @@ function OwnLessons({ lessons, tz }: { lessons: NonNullable<SlotsResponse["myLes
           <li key={l.id} className="rounded-xl bg-white p-3 text-sm">
             <div className="font-medium">{l.subject}</div>
             <div className="text-muted">
-              {l.alwaysOpen ? "Демо-класс, вход в любое время" : formatRange(l.startsAt, l.endsAt, tz)}
+              {l.isTrial ? "Бесплатный ознакомительный урок — идёт сейчас" : l.alwaysOpen ? "Демо-класс, вход в любое время" : formatRange(l.startsAt, l.endsAt, tz)}
               {!l.alwaysOpen && lessonTiming({ ...l }) && <> · {lessonTiming({ ...l })}</>}
             </div>
             <Link href={`/lessons/${l.id}`} className="mt-1 inline-block font-medium text-brand-700 hover:underline">

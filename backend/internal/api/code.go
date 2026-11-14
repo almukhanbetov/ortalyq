@@ -120,7 +120,10 @@ func (s *Server) getCode(c *gin.Context) {
 		"languages":        s.codeLanguages(),
 		"runnerConfigured": s.runner != nil,
 		"lastRun":          last,
-		"limits":           s.codeInfoLimits(),
+		"limits": gin.H{
+			"sourceBytes": coderun.MaxSourceBytes, "stdinBytes": coderun.MaxStdinBytes, "outputBytes": coderun.MaxOutputBytes,
+			"cpuSeconds": s.cfg.CodeRunCPUSeconds, "wallSeconds": s.cfg.CodeRunWallSeconds, "memoryMb": s.cfg.CodeRunMemoryMB,
+		},
 	})
 }
 
@@ -138,8 +141,43 @@ func (s *Server) createCodeRun(c *gin.Context) {
 		c.AbortWithStatusJSON(503, gin.H{"error": "Сервис выполнения не настроен", "code": coderun.StatusNotConfigured})
 		return
 	}
-	lang, in, ok := s.decodeCodeRun(c)
-	if !ok {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codeRunBodyLimit)
+	var in struct {
+		Language string `json:"language"`
+		Source   string `json:"source"`
+		Stdin    string `json:"stdin"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			fail(c, 413, "Код или входные данные слишком большие")
+		} else {
+			fail(c, 400, "Некорректный запрос")
+		}
+		return
+	}
+	var lang *coderun.Language
+	for _, x := range s.codeLanguages() {
+		if x.ID == in.Language {
+			lang = &x
+			break
+		}
+	}
+	switch {
+	case lang == nil:
+		fail(c, 400, "Язык не поддерживается")
+		return
+	case strings.TrimSpace(in.Source) == "":
+		fail(c, 400, "Код пустой")
+		return
+	case len(in.Source) > coderun.MaxSourceBytes:
+		fail(c, 413, "Код слишком большой (максимум 64 КБ)")
+		return
+	case len(in.Stdin) > coderun.MaxStdinBytes:
+		fail(c, 413, "Входные данные слишком большие (максимум 64 КБ)")
+		return
+	case !utf8.ValidString(in.Source) || !utf8.ValidString(in.Stdin):
+		fail(c, 400, "Код и входные данные должны быть в UTF-8")
 		return
 	}
 	u := currentUser(c)
@@ -195,7 +233,9 @@ func (s *Server) createCodeRun(c *gin.Context) {
 	rs.mu.Unlock()
 	s.hub.Broadcast(l.ID, gin.H{"type": "code.run", "run": run})
 
-	req := coderun.Request{Language: *lang, Source: in.Source, Stdin: in.Stdin, Limits: s.codeRunLimits()}
+	req := coderun.Request{Language: *lang, Source: in.Source, Stdin: in.Stdin, Limits: coderun.Limits{
+		CPUSeconds: s.cfg.CodeRunCPUSeconds, WallSeconds: s.cfg.CodeRunWallSeconds, MemoryKB: s.cfg.CodeRunMemoryMB * 1024,
+	}}
 	lessonID := l.ID
 	go func() {
 		defer release(runID)
@@ -245,63 +285,4 @@ func (s *Server) cancelCodeRun(c *gin.Context) {
 	}
 	cancel()
 	c.JSON(200, gin.H{"ok": true})
-}
-
-type codeRunInput struct {
-	Language string `json:"language"`
-	Source   string `json:"source"`
-	Stdin    string `json:"stdin"`
-}
-
-// decodeCodeRun читает и проверяет запрос запуска (язык, размер, кодировка). Общий для уроков и пробного урока.
-func (s *Server) decodeCodeRun(c *gin.Context) (*coderun.Language, codeRunInput, bool) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codeRunBodyLimit)
-	var in codeRunInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			fail(c, 413, "Код или входные данные слишком большие")
-		} else {
-			fail(c, 400, "Некорректный запрос")
-		}
-		return nil, in, false
-	}
-	var lang *coderun.Language
-	for _, x := range s.codeLanguages() {
-		if x.ID == in.Language {
-			lang = &x
-			break
-		}
-	}
-	switch {
-	case lang == nil:
-		fail(c, 400, "Язык не поддерживается")
-		return nil, in, false
-	case strings.TrimSpace(in.Source) == "":
-		fail(c, 400, "Код пустой")
-		return nil, in, false
-	case len(in.Source) > coderun.MaxSourceBytes:
-		fail(c, 413, "Код слишком большой (максимум 64 КБ)")
-		return nil, in, false
-	case len(in.Stdin) > coderun.MaxStdinBytes:
-		fail(c, 413, "Входные данные слишком большие (максимум 64 КБ)")
-		return nil, in, false
-	case !utf8.ValidString(in.Source) || !utf8.ValidString(in.Stdin):
-		fail(c, 400, "Код и входные данные должны быть в UTF-8")
-		return nil, in, false
-	}
-	return lang, in, true
-}
-
-// codeRunLimits — ограничения исполнителя из конфигурации.
-func (s *Server) codeRunLimits() coderun.Limits {
-	return coderun.Limits{CPUSeconds: s.cfg.CodeRunCPUSeconds, WallSeconds: s.cfg.CodeRunWallSeconds, MemoryKB: s.cfg.CodeRunMemoryMB * 1024}
-}
-
-// codeInfoLimits — ограничения для интерфейса вкладки «Код».
-func (s *Server) codeInfoLimits() gin.H {
-	return gin.H{
-		"sourceBytes": coderun.MaxSourceBytes, "stdinBytes": coderun.MaxStdinBytes, "outputBytes": coderun.MaxOutputBytes,
-		"cpuSeconds": s.cfg.CodeRunCPUSeconds, "wallSeconds": s.cfg.CodeRunWallSeconds, "memoryMb": s.cfg.CodeRunMemoryMB,
-	}
 }

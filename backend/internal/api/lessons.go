@@ -44,7 +44,7 @@ func (s *Server) myAvailability(c *gin.Context) {
 	// Занятые интервалы — те же, что вычитаются при записи (все неотменённые уроки, ещё не закончившиеся).
 	lrows, err := s.db.Query(c, `SELECT l.id, l.starts_at, l.ends_at, l.status, l.subject, st.name, l.always_open FROM lessons l
 		JOIN users st ON st.id = l.student_id
-		WHERE l.teacher_id=$1 AND l.status <> 'cancelled' AND l.ends_at > $2 ORDER BY l.starts_at`, teacherID, now)
+		WHERE l.teacher_id=$1 AND l.status <> 'cancelled' AND NOT l.is_trial AND l.ends_at > $2 ORDER BY l.starts_at`, teacherID, now)
 	if err != nil {
 		internal(c, err)
 		return
@@ -208,7 +208,7 @@ func (s *Server) bookLesson(c *gin.Context) {
 	}
 	// Понятная причина пересечения. Окончательную защиту (в т.ч. от одновременных запросов) даёт EXCLUDE в БД ниже.
 	var bs, be time.Time
-	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled'
+	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE teacher_id=$1 AND status <> 'cancelled' AND NOT is_trial
 		AND tstzrange(starts_at, ends_at) && tstzrange($2, $3) ORDER BY starts_at LIMIT 1`, req.TeacherID, start, end).Scan(&bs, &be)
 	if err == nil {
 		fail(c, 409, fmt.Sprintf("Это время пересекается с другим занятием преподавателя (%s–%s). Выберите другое время.", hm(bs, loc), hm(be, loc)))
@@ -217,7 +217,7 @@ func (s *Server) bookLesson(c *gin.Context) {
 		internal(c, err)
 		return
 	}
-	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled'
+	err = s.db.QueryRow(c, `SELECT starts_at, ends_at FROM lessons WHERE student_id=$1 AND status <> 'cancelled' AND NOT is_trial
 		AND tstzrange(starts_at, ends_at) && tstzrange($2, $3) ORDER BY starts_at LIMIT 1`, u.ID, start, end).Scan(&bs, &be)
 	if err == nil {
 		fail(c, 409, fmt.Sprintf("У вас уже есть занятие %s %s–%s, которое пересекается с выбранным временем.", dm(bs, loc), hm(bs, loc), hm(be, loc)))
@@ -271,17 +271,18 @@ type lessonRow struct {
 	IsDemo          bool       `json:"isDemo"`
 	HasTeacherPhoto bool       `json:"hasTeacherPhoto"`
 	AlwaysOpen      bool       `json:"alwaysOpen"`
+	IsTrial         bool       `json:"isTrial"` // бесплатный ознакомительный урок (см. trial.go); StudentID пуст, пока ученик не присоединился
 }
 
-const lessonSelect = `SELECT l.id, l.teacher_id, t.name, l.student_id, st.name, l.subject, l.note, l.starts_at, l.ends_at, l.status,
-	l.started_at, l.ended_at, l.cancel_reason, l.price, l.is_demo, (tp.photo_key IS NOT NULL), l.always_open
-	FROM lessons l JOIN users t ON t.id = l.teacher_id JOIN users st ON st.id = l.student_id
+const lessonSelect = `SELECT l.id, l.teacher_id, t.name, coalesce(l.student_id::text, ''), coalesce(st.name, ''), l.subject, l.note, l.starts_at, l.ends_at, l.status,
+	l.started_at, l.ended_at, l.cancel_reason, l.price, l.is_demo, (tp.photo_key IS NOT NULL), l.always_open, l.is_trial
+	FROM lessons l JOIN users t ON t.id = l.teacher_id LEFT JOIN users st ON st.id = l.student_id
 	LEFT JOIN teacher_profiles tp ON tp.user_id = l.teacher_id`
 
 func scanLesson(row interface{ Scan(...any) error }) (lessonRow, error) {
 	var l lessonRow
 	err := row.Scan(&l.ID, &l.TeacherID, &l.TeacherName, &l.StudentID, &l.StudentName, &l.Subject, &l.Note, &l.StartsAt, &l.EndsAt,
-		&l.Status, &l.StartedAt, &l.EndedAt, &l.CancelReason, &l.Price, &l.IsDemo, &l.HasTeacherPhoto, &l.AlwaysOpen)
+		&l.Status, &l.StartedAt, &l.EndedAt, &l.CancelReason, &l.Price, &l.IsDemo, &l.HasTeacherPhoto, &l.AlwaysOpen, &l.IsTrial)
 	return l, err
 }
 
@@ -397,7 +398,7 @@ func (s *Server) lessonAccess(c *gin.Context) (*lessonRow, string, bool) {
 // ученик, вошедший в 17:25 на урок 17:20–18:20, занимается до 18:20.
 func (s *Server) joinWindow(l *lessonRow) (time.Time, time.Time) {
 	if l.AlwaysOpen {
-		// Демо-класс открыт всегда
+		// Демо-класс и ознакомительный урок не привязаны к расписанию: вход определяется статусом (classProblem)
 		return time.Now().Add(-24 * time.Hour), time.Now().Add(24 * time.Hour)
 	}
 	return l.StartsAt.Add(-time.Duration(s.cfg.JoinEarlyMinutes) * time.Minute), l.EndsAt
@@ -413,7 +414,7 @@ func (s *Server) classProblem(l *lessonRow, now time.Time) string {
 		return "Занятие завершено — вход в класс закрыт"
 	}
 	if l.AlwaysOpen {
-		return "" // демо-класс открыт в любое время
+		return "" // демо-класс и идущий ознакомительный урок открыты в любое время
 	}
 	opens, closes := s.joinWindow(l)
 	if now.Before(opens) {
@@ -474,6 +475,7 @@ func (s *Server) getLesson(c *gin.Context) {
 		"review":       review,
 		"board":        gin.H{"revision": boardRev, "elementCount": boardCount},
 		"chatCount":    chatCount,
+		"invite":       s.trialInvite(l, role),
 	})
 }
 
@@ -574,7 +576,9 @@ func (s *Server) endLesson(c *gin.Context) {
 		return
 	}
 	s.stopActiveRecordings(c, l.ID)
-	if _, err := s.db.Exec(c, `UPDATE lessons SET status='completed', ended_at=now(), started_at=coalesce(started_at, now()) WHERE id=$1`, l.ID); err != nil {
+	// Ознакомительный урок не привязан к расписанию: его фактический интервал — от начала до нажатия «Завершить».
+	if _, err := s.db.Exec(c, `UPDATE lessons SET status='completed', ended_at=now(), started_at=coalesce(started_at, now()),
+		ends_at=CASE WHEN is_trial THEN greatest(now(), starts_at + interval '1 second') ELSE ends_at END WHERE id=$1`, l.ID); err != nil {
 		internal(c, err)
 		return
 	}

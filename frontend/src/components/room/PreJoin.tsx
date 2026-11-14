@@ -36,9 +36,6 @@ export function PreJoin({
   joining,
   joinError,
   joinHelp,
-  notice,
-  allowSkip,
-  joinLabel = "Войти в класс",
 }: {
   title: string;
   subtitle: string;
@@ -47,11 +44,6 @@ export function PreJoin({
   joinError: string;
   /** Помощь при ошибке входа (кнопка «Не вижу урок / Не могу войти») */
   joinHelp?: React.ReactNode;
-  /** Дополнительные пояснения в карточке (пробный урок) */
-  notice?: React.ReactNode;
-  /** Кнопка «Продолжить без камеры и микрофона» */
-  allowSkip?: boolean;
-  joinLabel?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -149,10 +141,6 @@ export function PreJoin({
     stopStream();
     onJoin({ camOn: camOn && !camErr, micOn: micOn && !micErr, camId, micId });
   };
-  const skip = () => {
-    stopStream();
-    onJoin({ camOn: false, micOn: false });
-  };
 
   return (
     <div className="mx-auto grid min-h-dvh max-w-5xl items-center gap-8 px-4 py-8 md:grid-cols-[1.3fr_1fr]">
@@ -203,7 +191,6 @@ export function PreJoin({
           <p className="text-sm text-muted">{subtitle}</p>
         </div>
         <p className="text-sm">Проверьте камеру и микрофон перед входом.</p>
-        {notice}
         {insecure && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             Браузер не даёт доступ к камере и микрофону на незащищённом соединении. Откройте сайт по HTTPS (см. README: адрес https://…:8443).
@@ -246,15 +233,10 @@ export function PreJoin({
             {joinHelp && <div className="mt-2">{joinHelp}</div>}
           </div>
         )}
-        <button className="btn-primary w-full py-3" onClick={join} disabled={joining || checking} title={checking ? "Проверяем устройства…" : undefined} data-testid="prejoin-join">
-          {joining && <Spinner className="h-4 w-4 text-white" />} {joinLabel}
+        <button className="btn-primary w-full py-3" onClick={join} disabled={joining || checking}>
+          {joining && <Spinner className="h-4 w-4 text-white" />} Войти в класс
         </button>
-        {allowSkip && (
-          <button className="btn-secondary w-full" onClick={skip} disabled={joining} data-testid="prejoin-skip">
-            Продолжить без камеры и микрофона
-          </button>
-        )}
-        {(camErr || micErr || allowSkip) && <p className="text-center text-xs text-muted">Можно войти и без устройства — включить его можно позже.</p>}
+        {(camErr || micErr) && <p className="text-center text-xs text-muted">Можно войти и без устройства — включить его можно позже.</p>}
       </div>
     </div>
   );

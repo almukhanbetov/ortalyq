@@ -272,19 +272,7 @@ function OutputBlock({ title, text, empty, tone, testId }: { title: string; text
 
 // ---------- Панель ----------
 
-export default function CodePanel({
-  apiBase,
-  socket,
-  status,
-  seed,
-}: {
-  /** /api/lessons/<id> или /api/demo/rooms/<id> */
-  apiBase: string;
-  socket: LessonSocket | null;
-  status: SocketStatus;
-  /** Начальный пример (пробный урок): вставляется в пустой документ один раз по разрешению сервера */
-  seed?: (doc: Y.Doc) => void;
-}) {
+export default function CodePanel({ lessonId, socket, status }: { lessonId: string; socket: LessonSocket | null; status: SocketStatus }) {
   const { tz } = useAuth();
   const [sync, setSync] = useState<CodeSync | null>(null);
   const [syncState, setSyncState] = useState<SyncState>("connecting");
@@ -301,7 +289,7 @@ export default function CodePanel({
   // Документ Yjs живёт, пока открыт класс (вкладка остаётся смонтированной после первого открытия).
   useEffect(() => {
     if (!socket) return;
-    const s = new CodeSync(socket, setSyncState, (m) => setRunError(`Изменение не сохранено: ${m}`), seed);
+    const s = new CodeSync(socket, setSyncState, (m) => setRunError(`Изменение не сохранено: ${m}`));
     const onMeta = () => setLanguage(s.meta.get("language") ?? "python");
     const onCode = () => setEmpty(s.code.length === 0);
     s.meta.observe(onMeta);
@@ -314,18 +302,18 @@ export default function CodePanel({
       s.stop();
       setSync(null);
     };
-  }, [socket, seed]);
+  }, [socket]);
 
   // Языки, доступность исполнителя и последний запуск; перезапрашиваем после переподключения.
   const loadInfo = useCallback(() => {
-    api<CodeInfo>(`${apiBase}/code`)
+    api<CodeInfo>(`/api/lessons/${lessonId}/code`)
       .then((i) => {
         setInfo(i);
         setInfoError("");
         setRun((r) => newerRun(r, i.lastRun));
       })
       .catch((e) => setInfoError(errorMessage(e)));
-  }, [apiBase]);
+  }, [lessonId]);
   useEffect(() => {
     if (status === "open") loadInfo();
   }, [status, loadInfo]);
@@ -333,14 +321,7 @@ export default function CodePanel({
   useEffect(() => {
     if (!socket) return;
     return socket.on((m) => {
-      if (m.type === "code.run") {
-        setRun((r) => newerRun(r, m.run as CodeRun));
-        if (typeof m.runsLeft === "number") {
-          // Пробный урок: сервер сообщает остаток (неудачная из-за исполнителя попытка не засчитывается).
-          const left = m.runsLeft;
-          setInfo((i) => (i && typeof i.runsLeft === "number" ? { ...i, runsLeft: left } : i));
-        } else if (m.run?.status === "running") setInfo((i) => (i && typeof i.runsLeft === "number" && i.runsLeft > 0 ? { ...i, runsLeft: i.runsLeft - 1 } : i));
-      }
+      if (m.type === "code.run") setRun((r) => newerRun(r, m.run as CodeRun));
     });
   }, [socket]);
 
@@ -383,13 +364,10 @@ export default function CodePanel({
 
   const running = run?.status === "running";
   const runnerConfigured = info?.runnerConfigured ?? false;
-  const runnerProblem = info?.runnerProblem || "Сервис выполнения не настроен";
   const disabledReason = !info
     ? "Загружаем настройки…"
     : !runnerConfigured
-      ? runnerProblem
-      : info.runsLeft === 0
-        ? "Лимит запусков в пробном уроке исчерпан"
+      ? "Сервис выполнения не настроен"
       : running
         ? "Программа выполняется"
         : empty
@@ -407,7 +385,7 @@ export default function CodePanel({
     setStarting(true);
     setRunError("");
     try {
-      const res = await api<{ run: CodeRun }>(`${apiBase}/code/runs`, { method: "POST", json: { language: lang.id, source, stdin } });
+      const res = await api<{ run: CodeRun }>(`/api/lessons/${lessonId}/code/runs`, { method: "POST", json: { language: lang.id, source, stdin } });
       setRun((r) => newerRun(r, res.run));
     } catch (e) {
       setRunError(e instanceof ApiError && e.status === 0 ? "Нет соединения с сервером" : errorMessage(e));
@@ -419,7 +397,7 @@ export default function CodePanel({
   const cancel = async () => {
     if (!run || run.status !== "running") return;
     try {
-      await api(`${apiBase}/code/runs/${run.id}/cancel`, { method: "POST" });
+      await api(`/api/lessons/${lessonId}/code/runs/${run.id}/cancel`, { method: "POST" });
     } catch (e) {
       setRunError(errorMessage(e));
     }
@@ -475,12 +453,7 @@ export default function CodePanel({
       </div>
       {info && !runnerConfigured && (
         <div className="border-b border-line bg-amber-50 px-3 py-1.5 text-xs text-amber-900" role="status">
-          {info.runnerProblem ? `${info.runnerProblem}.` : "Сервис выполнения не настроен — код можно писать и редактировать вместе, но запуск недоступен."}
-        </div>
-      )}
-      {info && runnerConfigured && typeof info.runsLeft === "number" && (
-        <div className="border-b border-line bg-brand-50 px-3 py-1.5 text-xs text-brand-900" role="status" data-testid="code-runs-left">
-          Пробный урок: осталось запусков — {info.runsLeft}. Код выполняется на отдельном изолированном сервере.
+          Сервис выполнения не настроен — код можно писать и редактировать вместе, но запуск недоступен.
         </div>
       )}
       {infoError && <div className="border-b border-line bg-red-50 px-3 py-1.5 text-xs text-red-700">{infoError}</div>}

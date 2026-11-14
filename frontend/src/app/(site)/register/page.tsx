@@ -8,6 +8,11 @@ import { useAuth } from "@/lib/auth";
 import { browserTimezone } from "@/lib/format";
 import { ErrorBox, PasswordInput, Spinner } from "@/components/ui";
 
+// Возврат после регистрации (например, к приглашению на ознакомительный урок) — только внутренний путь.
+function safeNext(v: string | null) {
+  return v && v.startsWith("/") && !v.startsWith("//") ? v : "";
+}
+
 function RegisterForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -31,7 +36,7 @@ function RegisterForm() {
         json: { name, email, password, role, timezone: tz || browserTimezone() },
       });
       setUser(r.user);
-      router.replace(role === "teacher" ? "/profile?welcome=1" : "/teachers");
+      router.replace(safeNext(params.get("next")) || (role === "teacher" ? "/profile?welcome=1" : "/teachers"));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -84,7 +89,7 @@ function RegisterForm() {
         </form>
         <p className="mt-6 text-center text-sm text-muted">
           Уже есть аккаунт?{" "}
-          <Link href="/login" className="font-medium text-brand-700 hover:underline">
+          <Link href={params.get("next") ? `/login?next=${encodeURIComponent(params.get("next")!)}` : "/login"} className="font-medium text-brand-700 hover:underline">
             Войти
           </Link>
         </p>

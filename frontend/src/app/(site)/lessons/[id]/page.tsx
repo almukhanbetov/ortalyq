@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { TRIAL_LABEL, TrialChip, TrialInvite } from "@/components/TrialLesson";
+import { trialTimeText } from "@/components/LessonCard";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { api, ChatMessage, errorMessage, Homework, LessonDetail, Recording, upload } from "@/lib/api";
 import { useRequireUser } from "@/lib/auth";
@@ -98,10 +100,11 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
               <h1 className="text-2xl font-bold">{l.subject}</h1>
               <StatusBadge status={phase} />
               {l.isDemo && <DemoBadge />}
+              {l.isTrial && <TrialChip />}
             </div>
             <p className="mt-1 text-sm">
-              {formatRange(l.startsAt, l.endsAt, tz)}
-              {timing && <span className="text-muted" data-testid="lesson-timing"> · {timing}</span>}
+              {l.isTrial ? trialTimeText(l, tz) : formatRange(l.startsAt, l.endsAt, tz)}
+              {!l.isTrial && timing && <span className="text-muted" data-testid="lesson-timing"> · {timing}</span>}
             </p>
             <p className="text-xs text-muted">Часовой пояс: {tzLabel(tz)}</p>
             {l.note && <p className="mt-3 rounded-xl bg-canvas px-3 py-2 text-sm text-ink/80">«{l.note}»</p>}
@@ -134,13 +137,27 @@ export default function LessonPage({ params }: { params: Promise<{ id: string }>
         </div>
         <div className="mt-6 grid gap-3 sm:grid-cols-3">
           <Person role="Преподаватель" name={l.teacherName} photo={l.hasTeacherPhoto ? `/api/teachers/${l.teacherId}/photo` : null} href={`/teachers/${l.teacherId}`} />
-          <Person role="Ученик" name={l.studentName} />
+          <Person role="Ученик" name={l.studentName || "ещё не присоединился"} />
           <div className="rounded-2xl bg-canvas p-4">
             <div className="text-xs text-muted">Стоимость</div>
-            <div className="font-semibold">{formatPrice(l.price)}</div>
-            <div className="text-xs text-muted">Оплата не подключена (MVP)</div>
+            {l.isTrial ? (
+              <>
+                <div className="font-semibold" data-testid="lesson-price">Бесплатно</div>
+                <div className="text-xs text-muted">{TRIAL_LABEL}: платёж не создаётся</div>
+              </>
+            ) : (
+              <>
+                <div className="font-semibold">{formatPrice(l.price)}</div>
+                <div className="text-xs text-muted">Оплата не подключена (MVP)</div>
+              </>
+            )}
           </div>
         </div>
+        {isTeacher && data.invite?.path && (
+          <div className="mt-4 rounded-2xl border border-brand-200 bg-brand-50 p-4">
+            <TrialInvite path={data.invite.path} />
+          </div>
+        )}
         {config && !config.videoConfigured && active && (
           <div className="mt-4">
             <Notice tone="warn">Видеосвязь не настроена на сервере — вход в класс будет недоступен.</Notice>

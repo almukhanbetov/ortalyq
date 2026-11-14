@@ -17,19 +17,18 @@ import {
   type TrackReferenceOrPlaceholder,
 } from "@livekit/components-react";
 import { ConnectionState, MediaDeviceFailure, Participant, ParticipantKind, Track } from "livekit-client";
-import { api, DemoState, errorMessage, Lesson, LessonDetail, Recording } from "@/lib/api";
+import { api, errorMessage, LessonDetail, Recording } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { formatTime } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
 import { lessonTiming } from "@/lib/lessonTime";
 import { useLessonRealtime } from "@/lib/lessonSocket";
-import { isNarrowScreen } from "@/lib/demo";
 import { Board } from "../board";
 import { CodePanel } from "../code";
 import { WorkshopPanel } from "../workshop";
 import { ConfirmModal, Modal, Spinner, toast } from "../ui";
 import { DeviceChoice, mediaErrorText } from "./PreJoin";
-import { DemoAiSample, DemoHints, DemoInvite, demoBoardSeed, demoCodeSeed, demoWorkshopSeed } from "../demo/samples";
+import { TRIAL_LABEL, TrialInvite } from "../TrialLesson";
 
 export interface JoinInfo {
   token: string;
@@ -41,53 +40,6 @@ export function isHiddenParticipant(p: Participant) {
 }
 
 type Banner = { tone: "info" | "warn" | "error"; text: string; retry?: boolean } | null;
-
-/** Класс урока или пробного урока: адрес API, роль и подписи. Механизмы класса одни и те же. */
-interface ClassCtx {
-  /** /api/lessons/<id> или /api/demo/rooms/<id> */
-  apiBase: string;
-  id: string;
-  isTeacher: boolean;
-  myId: string;
-  /** Имя второго участника (для подписи плиток и ожидания) */
-  otherName: string;
-  waitingText: string;
-  backHref: string;
-  lesson?: Lesson;
-  demo?: DemoState;
-}
-
-function lessonCtx(detail: LessonDetail, myId: string): ClassCtx {
-  const l = detail.lesson;
-  const isTeacher = detail.myRole === "teacher";
-  const otherName = isTeacher ? l.studentName : l.teacherName;
-  return {
-    apiBase: `/api/lessons/${l.id}`,
-    id: l.id,
-    isTeacher,
-    myId,
-    otherName,
-    waitingText: `Ожидаем ${isTeacher ? "ученика" : "преподавателя"}: ${otherName}`,
-    backHref: `/lessons/${l.id}`,
-    lesson: l,
-  };
-}
-
-function demoCtx(demo: DemoState): ClassCtx {
-  const isTeacher = demo.me.role === "teacher";
-  const other = demo.participants.find((p) => p.role !== demo.me.role);
-  const solo = demo.mode === "solo";
-  return {
-    apiBase: `/api/demo/rooms/${demo.id}`,
-    id: demo.id,
-    isTeacher,
-    myId: demo.me.id,
-    otherName: other?.name ?? (isTeacher ? "Ученик" : "Преподаватель"),
-    waitingText: solo ? "Самостоятельный просмотр — второго участника нет" : isTeacher ? "Ожидаем второго участника по ссылке-приглашению" : "Ожидаем организатора",
-    backHref: "/demo",
-    demo,
-  };
-}
 
 /** Всё, что относится к видеосвязи. При отсутствии LiveKit — пустые плитки и неактивные кнопки. */
 interface Media {
@@ -104,35 +56,28 @@ interface Media {
 
 export function ClassRoom({
   detail,
-  demo,
   join,
   devices,
   videoProblem,
   onRejoin,
-  onDemoEnded,
-  onDemoChanged,
+  onDetailChanged,
 }: {
-  /** Урок (или demo — пробный урок) */
-  detail?: LessonDetail;
-  demo?: DemoState;
+  detail: LessonDetail;
   /** null — видеосвязь недоступна (videoProblem объясняет причину) */
   join: JoinInfo | null;
   devices: DeviceChoice | null;
   videoProblem?: string;
   onRejoin: () => void;
-  /** Пробный урок завершён (сервер закрыл доступ) */
-  onDemoEnded?: (reason: string) => void;
-  /** Состав участников пробного урока изменился */
-  onDemoChanged?: () => void;
+  /** Участники урока изменились (ученик присоединился к ознакомительному уроку) — перечитать сведения */
+  onDetailChanged?: () => void;
 }) {
-  const { user } = useAuth();
   const [ended, setEnded] = useState(false);
   const onEnded = useCallback(() => setEnded(true), []);
-  const ctx = useMemo(() => (demo ? demoCtx(demo) : lessonCtx(detail!, user?.id ?? "")), [demo, detail, user?.id]);
-  const layout = (media: Media) => <ClassLayout ctx={ctx} media={media} onEnded={onEnded} onDemoEnded={onDemoEnded} onDemoChanged={onDemoChanged} />;
 
   if (!join || !devices) {
-    return layout(noVideoMedia(ctx, videoProblem ?? "Видеосвязь недоступна."));
+    return (
+      <ClassLayout detail={detail} media={noVideoMedia(detail, videoProblem ?? "Видеосвязь недоступна.")} onEnded={onEnded} onDetailChanged={onDetailChanged} />
+    );
   }
 
   const serverUrl = join.url || `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
@@ -147,8 +92,8 @@ export function ClassRoom({
       onError={(e) => toast(`Ошибка видеосвязи: ${e.message}`, "err")}
       className="h-dvh"
     >
-      <LiveMedia ctx={ctx} onRejoin={onRejoin} ended={ended}>
-        {layout}
+      <LiveMedia detail={detail} onRejoin={onRejoin} ended={ended}>
+        {(media) => <ClassLayout detail={detail} media={media} onEnded={onEnded} onDetailChanged={onDetailChanged} />}
       </LiveMedia>
       <RoomAudioRenderer />
     </LiveKitRoom>
@@ -157,8 +102,8 @@ export function ClassRoom({
 
 // ---------- Видеосвязь недоступна ----------
 
-function noVideoMedia(ctx: ClassCtx, reason: string): Media {
-  const other = ctx.demo?.mode === "solo" ? "Второй участник" : ctx.otherName;
+function noVideoMedia(detail: LessonDetail, reason: string): Media {
+  const other = otherParticipant(detail);
   const tile = (label: string) => (
     <div className="flex aspect-video flex-col items-center justify-center rounded-2xl bg-ink/90 p-3 text-center text-xs text-white/75">
       <span className="mb-1 text-xl" aria-hidden>
@@ -177,7 +122,7 @@ function noVideoMedia(ctx: ClassCtx, reason: string): Media {
   return {
     enabled: false,
     connected: false,
-    banner: { tone: "warn", text: ctx.demo ? `Видеосвязь недоступна: ${reason}` : `Видеосвязь недоступна: ${reason} Доска и чат работают.` },
+    banner: { tone: "warn", text: `Видеосвязь недоступна: ${reason} Доска и чат работают.` },
     remoteCount: 0,
     videos: (
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
@@ -200,16 +145,18 @@ function noVideoMedia(ctx: ClassCtx, reason: string): Media {
 // ---------- Видеосвязь через LiveKit ----------
 
 function LiveMedia({
-  ctx,
+  detail,
   onRejoin,
   ended,
   children,
 }: {
-  ctx: ClassCtx;
+  detail: LessonDetail;
   onRejoin: () => void;
   ended: boolean;
   children: (m: Media) => React.ReactNode;
 }) {
+  const isTeacher = detail.myRole === "teacher";
+  const otherName = otherParticipant(detail);
   const conn = useConnectionState();
   const remotes = useRemoteParticipants().filter((p) => !isHiddenParticipant(p));
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled, lastCameraError, lastMicrophoneError } = useLocalParticipant();
@@ -256,8 +203,8 @@ function LiveMedia({
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
       {remotes.length === 0 ? (
         <div className="flex aspect-video flex-col items-center justify-center rounded-2xl bg-ink/90 p-3 text-center text-xs text-white/80">
-          {ctx.demo?.mode !== "solo" && <Spinner className="mb-2 h-5 w-5 text-white" />}
-          {ctx.waitingText}
+          <Spinner className="mb-2 h-5 w-5 text-white" />
+          Ожидаем {isTeacher ? "ученика" : "преподавателя"}: {otherName}
         </div>
       ) : (
         cams.filter((t) => !t.participant.isLocal).map((t) => <Tile key={t.participant.identity} trackRef={t} />)
@@ -322,25 +269,30 @@ const tools: { type: string; icon: string; label: string; key: string }[] = [
 ];
 
 function ClassLayout({
-  ctx,
+  detail,
   media,
   onEnded,
-  onDemoEnded,
-  onDemoChanged,
+  onDetailChanged,
 }: {
-  ctx: ClassCtx;
+  detail: LessonDetail;
   media: Media;
   onEnded: () => void;
-  onDemoEnded?: (reason: string) => void;
-  onDemoChanged?: () => void;
+  onDetailChanged?: () => void;
 }) {
   const router = useRouter();
-  const { tz, config } = useAuth();
-  const { lesson, demo, isTeacher, otherName, apiBase } = ctx;
-  const rt = useLessonRealtime(apiBase, true);
-  // На телефоне подсказки изначально свёрнуты (доска важнее), открываются кнопкой «Как пользоваться».
-  const [hintsOpen, setHintsOpen] = useState(() => !!demo && !isNarrowScreen());
-  const [inviteOpen, setInviteOpen] = useState(false);
+  const { tz, config, user } = useAuth();
+  const lesson = detail.lesson;
+  const isTeacher = detail.myRole === "teacher";
+  const otherName = otherParticipant(detail);
+  const rt = useLessonRealtime(lesson.id, true);
+
+  // Ученик присоединился к ознакомительному уроку по приглашению — обновить имя и убрать приглашение.
+  useEffect(() => {
+    if (!rt.socket || !onDetailChanged) return;
+    return rt.socket.on((m) => {
+      if (m.type === "lesson.participants") onDetailChanged();
+    });
+  }, [rt.socket, onDetailChanged]);
   const [view, setView] = useState<"board" | "screen" | "code" | "workshop">("board");
   const [codeOpened, setCodeOpened] = useState(false); // после первого открытия редактор остаётся смонтированным
   const [workshopOpened, setWorkshopOpened] = useState(false); // то же для мастерской
@@ -353,7 +305,7 @@ function ClassLayout({
   const boardApi = useRef<ExcalidrawImperativeAPI | null>(null);
   const [activeTool, setActiveTool] = useState("selection");
 
-  const otherOnline = rt.presence.some((p) => p.id !== ctx.myId);
+  const otherOnline = rt.presence.some((p) => p.id !== user?.id);
   const bothHere = media.enabled ? media.remoteCount > 0 : otherOnline;
 
   // Автопереключение на демонстрацию экрана
@@ -375,15 +327,6 @@ function ClassLayout({
   useEffect(() => {
     if (ended) onEnded();
   }, [ended, onEnded]);
-
-  // Пробный урок: сервер сообщает об окончании (время вышло / организатор завершил) и о новом участнике.
-  useEffect(() => {
-    if (!rt.socket || !demo) return;
-    return rt.socket.on((m) => {
-      if (m.type === "demo.ended") onDemoEnded?.(m.reason ?? "ended");
-      if (m.type === "demo.participants") onDemoChanged?.();
-    });
-  }, [rt.socket, demo, onDemoEnded, onDemoChanged]);
 
   // Уведомления о статусе записи
   const recStatus = rt.recording?.status;
@@ -426,20 +369,13 @@ function ClassLayout({
   };
 
   const requestRecording = async () => {
-    if (await call(() => api(`${apiBase}/recordings`, { method: "POST" }))) setRecOpen(false);
+    if (await call(() => api(`/api/lessons/${lesson.id}/recordings`, { method: "POST" }))) setRecOpen(false);
   };
-  const stopRecording = (r: Recording) => call(() => api(`${apiBase}/recordings/${r.id}/stop`, { method: "POST" }));
+  const stopRecording = (r: Recording) => call(() => api(`/api/lessons/${lesson.id}/recordings/${r.id}/stop`, { method: "POST" }));
   const consent = (accept: boolean) =>
-    rt.recording && call(() => api(`${apiBase}/recordings/${rt.recording!.id}/consent`, { method: "POST", json: { accept } }));
+    rt.recording && call(() => api(`/api/lessons/${lesson.id}/recordings/${rt.recording!.id}/consent`, { method: "POST", json: { accept } }));
   const endLesson = async () => {
-    if (demo) {
-      if (await call(() => api(`${apiBase}/end`, { method: "POST" }))) {
-        setEndOpen(false);
-        onDemoEnded?.("ended");
-      }
-      return;
-    }
-    if (await call(() => api(`${apiBase}/end`, { method: "POST" }))) router.push(ctx.backHref);
+    if (await call(() => api(`/api/lessons/${lesson.id}/end`, { method: "POST" }))) router.push(`/lessons/${lesson.id}`);
   };
 
   const rec = rt.recording;
@@ -455,38 +391,29 @@ function ClassLayout({
     if (rt.status === "reconnecting") return { tone: "warn", text: "Нет связи с сервером доски и чата — переподключаемся…" };
     return media.banner;
   }, [rt.status, media.banner]);
-  const inviteWaiting = !!demo && demo.mode === "pair" && isTeacher && !!demo.invite?.path && !otherOnline;
 
   return (
     <div className="flex h-dvh flex-col bg-canvas">
       {/* Верхняя панель */}
       <header className="flex items-center gap-3 border-b border-line bg-white px-3 py-2 sm:px-4">
-        <Link href={ctx.backHref} className="btn-ghost btn-sm" aria-label={demo ? "К описанию пробного урока" : "К странице занятия"}>
+        <Link href={`/lessons/${lesson.id}`} className="btn-ghost btn-sm" aria-label="К странице занятия">
           ←
         </Link>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">
-            {demo ? `Пробный урок · ${isTeacher ? "вы — преподаватель" : "вы — ученик"}` : `Виртуальный класс · ${lesson!.subject} · ${otherName}`}
+            Виртуальный класс · {lesson.subject} · {otherName}
           </div>
-          <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
-            <span className={`h-2 w-2 rounded-full ${bothHere || demo?.mode === "solo" ? "bg-emerald-500" : "bg-amber-400"}`} aria-hidden />
-            {demo ? (
-              demo.mode === "solo" ? (
-                "самостоятельный просмотр"
-              ) : bothHere ? (
-                `оба участника в классе · ${otherName}`
-              ) : (
-                "ожидаем второго участника"
-              )
-            ) : (
-              <>
-                {lesson!.alwaysOpen ? "демо-класс, открыт всегда" : `${formatTime(lesson!.startsAt, tz)}–${formatTime(lesson!.endsAt, tz)}`}
-                <TimeLeft lesson={lesson!} /> · {bothHere ? "оба участника в классе" : `ожидаем: ${otherName}`}
-              </>
-            )}
+          <div className="flex items-center gap-1.5 text-xs text-muted">
+            <span className={`h-2 w-2 rounded-full ${bothHere ? "bg-emerald-500" : "bg-amber-400"}`} aria-hidden />
+            {lesson.isTrial
+              ? `${TRIAL_LABEL.toLowerCase()} · начат в ${formatTime(lesson.startedAt ?? lesson.startsAt, tz)}`
+              : lesson.alwaysOpen
+                ? "демо-класс, открыт всегда"
+                : `${formatTime(lesson.startsAt, tz)}–${formatTime(lesson.endsAt, tz)}`}
+            <TimeLeft lesson={lesson} /> ·{" "}
+            {bothHere ? "оба участника в классе" : `ожидаем: ${otherName}`}
           </div>
         </div>
-        {demo && <DemoTimer expiresAt={demo.expiresAt} />}
         {rec?.status === "recording" && (
           <span className="chip bg-red-600 py-1 text-white" role="status">
             <span className="rec-dot h-2 w-2 rounded-full bg-white" /> Идёт запись
@@ -497,8 +424,12 @@ function ClassLayout({
         {rec?.status === "processing" && <span className="chip hidden bg-amber-100 py-1 text-amber-800 sm:inline-flex">Запись обрабатывается</span>}
       </header>
       {rec?.status === "recording" && <div className="h-1 bg-red-600" aria-hidden />}
+      {isTeacher && detail.invite?.path && (
+        <div className="border-b border-brand-200 bg-brand-50 px-3 py-2 sm:px-4">
+          <TrialInvite path={detail.invite.path} compact />
+        </div>
+      )}
 
-      {demo && <DemoWarning expiresAt={demo.expiresAt} />}
       {banner && (
         <div
           className={`flex items-center justify-center gap-3 px-4 py-2 text-center text-sm ${
@@ -579,24 +510,6 @@ function ClassLayout({
               🗑️ Очистить
             </button>
           </div>
-          {demo && hintsOpen && <DemoHints demo={demo} onClose={() => setHintsOpen(false)} onOpen={(v) => (v === "code" ? openCode() : v === "workshop" ? openWorkshop() : setView("board"))} />}
-          {demo && !hintsOpen && (
-            // Одна строка и на телефоне: доска остаётся основной областью.
-            <div className={`flex items-center gap-2 border-b border-line bg-brand-50 px-2 py-1.5 text-xs text-brand-900 ${inviteWaiting ? "" : "md:hidden"}`} role="status">
-              <button className="btn-primary btn-sm shrink-0 px-3 py-1 text-xs md:hidden" onClick={() => setHintsOpen(true)} aria-expanded={false} data-testid="demo-howto">
-                💡 Как пользоваться
-              </button>
-              {inviteWaiting && (
-                <>
-                  <span className="hidden truncate md:inline">Второй участник ещё не вошёл.</span>
-                  <button className="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onClick={() => setInviteOpen(true)} data-testid="demo-invite-open">
-                    🔗 <span className="md:hidden">Пригласить</span>
-                    <span className="hidden md:inline">Показать ссылку-приглашение</span>
-                  </button>
-                </>
-              )}
-            </div>
-          )}
           <div className="relative min-h-0 flex-1">
             <div className={view === "board" ? "absolute inset-0" : "hidden"}>
               <Board
@@ -605,59 +518,31 @@ function ClassLayout({
                 onRequestClear={() => setClearOpen(true)}
                 onApi={(a) => (boardApi.current = a)}
                 onToolChange={setActiveTool}
-                seed={demo ? demoBoardSeed : undefined}
               />
             </div>
             {view === "screen" && media.screen && <div className="absolute inset-0 bg-ink">{media.screen}</div>}
             {codeOpened && (
               <div className={view === "code" ? "absolute inset-0" : "hidden"}>
-                <CodePanel apiBase={apiBase} socket={rt.socket} status={rt.status} seed={demo ? demoCodeSeed : undefined} />
+                <CodePanel lessonId={lesson.id} socket={rt.socket} status={rt.status} />
               </div>
             )}
             {workshopOpened && (
               <div className={view === "workshop" ? "absolute inset-0" : "hidden"}>
-                <WorkshopPanel
-                  apiBase={apiBase}
-                  lessonId={ctx.id}
-                  socket={rt.socket}
-                  status={rt.status}
-                  seed={demo ? demoWorkshopSeed : undefined}
-                  sample={demo ? <DemoAiSample /> : undefined}
-                />
+                <WorkshopPanel lessonId={lesson.id} socket={rt.socket} status={rt.status} />
               </div>
             )}
           </div>
         </main>
         <aside className={`flex min-h-0 flex-col gap-2 lg:w-80 ${mobileTab === "chat" ? "flex flex-1" : "hidden lg:flex"}`}>
           <div className="hidden lg:block">{media.videos}</div>
-          <Chat rt={rt} myId={ctx.myId} demo={!!demo} />
+          <Chat rt={rt} />
         </aside>
       </div>
 
       {/* Панель управления */}
       <footer className="flex flex-wrap items-center justify-center gap-2 border-t border-line bg-white px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         {media.controls}
-        {demo && (
-          <button
-            className="btn rounded-full bg-canvas px-3 text-ink disabled:opacity-50"
-            disabled
-            title={demo.features.recordingNote}
-            aria-label={`Запись: ${demo.features.recordingNote}`}
-          >
-            ⏺ <span className="hidden sm:inline">Запись</span>
-          </button>
-        )}
-        {demo && (
-          <button className="btn rounded-full bg-brand-50 px-3 text-brand-800 hover:bg-brand-100" onClick={() => setHintsOpen((v) => !v)} aria-expanded={hintsOpen} data-testid="demo-hints-toggle" aria-label="Как пользоваться">
-            💡 <span className="hidden sm:inline">Как пользоваться</span>
-          </button>
-        )}
-        {demo?.mode === "pair" && isTeacher && demo.invite?.path && (
-          <button className="btn rounded-full bg-brand-50 px-3 text-brand-800 hover:bg-brand-100" onClick={() => setInviteOpen(true)}>
-            🔗 <span className="hidden sm:inline">Пригласить</span>
-          </button>
-        )}
-        {!demo && isTeacher &&
+        {isTeacher &&
           (recActive && rec ? (
             <button className="btn rounded-full bg-red-50 text-red-700 hover:bg-red-100" onClick={() => stopRecording(rec)} disabled={busy}>
               ⏹ {rec.status === "awaiting_consent" ? "Отменить запрос записи" : "Остановить запись"}
@@ -674,28 +559,15 @@ function ClassLayout({
           ))}
         <div className="mx-1 hidden h-8 w-px bg-line sm:block" />
         {isTeacher && (
-          <button className="btn-danger rounded-full" onClick={() => setEndOpen(true)} data-testid={demo ? "demo-end" : undefined}>
-            {demo ? (
-              <>
-                <span className="sm:hidden">Завершить</span>
-                <span className="hidden sm:inline">Завершить демонстрацию</span>
-              </>
-            ) : (
-              "Завершить занятие"
-            )}
+          <button className="btn-danger rounded-full" onClick={() => setEndOpen(true)}>
+            Завершить занятие
           </button>
         )}
-        <Link href={ctx.backHref} className="btn-secondary rounded-full">
-          {demo ? "Выйти" : "Выйти из класса"}
+        <Link href={`/lessons/${lesson.id}`} className="btn-secondary rounded-full">
+          Выйти из класса
         </Link>
       </footer>
-      {demo && (
-        // На телефоне скрыто: то же сказано перед входом, а место нужно доске.
-        <div className="hidden bg-amber-50 px-4 py-1.5 text-center text-[11px] text-amber-900 md:block">
-          Демонстрация бесплатная и не создаёт бронирование. Запись отключена, доска, текст, код и чат временные — удаляются при завершении.
-        </div>
-      )}
-      {!demo && isTeacher && config && !config.recordingConfigured && (
+      {isTeacher && config && !config.recordingConfigured && (
         <div className="bg-amber-50 px-4 py-1.5 text-center text-xs text-amber-900">Запись недоступна: {config.recordingProblem}</div>
       )}
 
@@ -711,15 +583,10 @@ function ClassLayout({
           setClearOpen(false);
         }}
       />
-      {demo?.invite?.path && <DemoInvite open={inviteOpen} onClose={() => setInviteOpen(false)} path={demo.invite.path} expiresAt={demo.expiresAt} />}
       <ConfirmModal
         open={endOpen}
-        title={demo ? "Завершить демонстрацию?" : "Завершить занятие?"}
-        text={
-          demo
-            ? `Доступ закроется${demo.mode === "pair" ? " у обоих участников" : ""}, доска, текст, код и чат будут удалены. Начать новую демонстрацию можно в любой момент.`
-            : "Класс закроется у обоих участников, запись (если идёт) будет остановлена. Доска, чат и материалы сохранятся на странице занятия."
-        }
+        title="Завершить занятие?"
+        text="Класс закроется у обоих участников, запись (если идёт) будет остановлена. Доска, чат и материалы сохранятся на странице занятия."
         confirmLabel="Завершить"
         danger
         busy={busy}
@@ -758,7 +625,7 @@ function ClassLayout({
         }
       >
         <div className="space-y-2">
-          <p>{isTeacher ? "Подтвердите согласие на запись." : `${lesson?.teacherName ?? otherName} предлагает записать занятие.`}</p>
+          <p>{isTeacher ? "Подтвердите согласие на запись." : `${lesson.teacherName} предлагает записать занятие.`}</p>
           <p className="text-muted">
             В запись попадут звук и видео обоих участников, доска и демонстрация экрана. Запись будет доступна только вам и преподавателю на странице занятия. Пока
             идёт запись, вверху горит красный индикатор.
@@ -766,13 +633,13 @@ function ClassLayout({
         </div>
       </Modal>
 
-      {ended && !demo && (
+      {ended && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm">
           <div className="card max-w-sm p-6 text-center">
             <div className="mb-2 text-3xl">✅</div>
             <h2 className="text-lg font-semibold">{rt.lessonStatus === "cancelled" ? "Занятие отменено" : "Занятие завершено"}</h2>
             <p className="mt-1 text-sm text-muted">Доска, чат, материалы, опубликованные разборы и задания мастерской и запись доступны на странице занятия.</p>
-            <Link href={ctx.backHref} className="btn-primary mt-4 w-full">
+            <Link href={`/lessons/${lesson.id}`} className="btn-primary mt-4 w-full">
               Перейти к занятию
             </Link>
           </div>
@@ -822,8 +689,8 @@ function Tile({ trackRef, local }: { trackRef: TrackReferenceOrPlaceholder; loca
   );
 }
 
-function Chat({ rt, myId, demo }: { rt: ReturnType<typeof useLessonRealtime>; myId: string; demo: boolean }) {
-  const { tz } = useAuth();
+function Chat({ rt }: { rt: ReturnType<typeof useLessonRealtime> }) {
+  const { user, tz } = useAuth();
   const [text, setText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const online = rt.status === "open";
@@ -850,17 +717,15 @@ function Chat({ rt, myId, demo }: { rt: ReturnType<typeof useLessonRealtime>; my
   return (
     <div className="flex min-h-48 flex-1 flex-col overflow-hidden rounded-2xl border border-line bg-white">
       <div className="flex items-center justify-between border-b border-line px-3 py-2">
-        <span className="text-sm font-semibold">{demo ? "Чат" : "Чат занятия"}</span>
+        <span className="text-sm font-semibold">Чат занятия</span>
         <span className={`text-xs ${online ? "text-emerald-600" : "text-amber-600"}`}>{online ? "в сети" : "подключение…"}</span>
       </div>
       <div ref={listRef} className="flex-1 space-y-2 overflow-y-auto p-3">
         {rt.chat.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted">
-            {demo ? "Сообщений пока нет. В пробном уроке они временные и удаляются после демонстрации." : "Сообщений пока нет. Они сохраняются и будут доступны после урока."}
-          </p>
+          <p className="py-6 text-center text-xs text-muted">Сообщений пока нет. Они сохраняются и будут доступны после урока.</p>
         ) : (
           rt.chat.map((m) => {
-            const mine = m.userId === myId;
+            const mine = m.userId === user?.id;
             return (
               <div key={m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
                 <div className={`max-w-[85%] whitespace-pre-line break-words rounded-2xl px-3 py-1.5 text-sm ${mine ? "bg-brand-600 text-white" : "bg-canvas"}`}>{m.body}</div>
@@ -873,7 +738,7 @@ function Chat({ rt, myId, demo }: { rt: ReturnType<typeof useLessonRealtime>; my
         )}
       </div>
       <form onSubmit={send} className="flex gap-2 border-t border-line p-2">
-        <input className="input py-2" placeholder={online ? "Сообщение…" : "Нет соединения"} maxLength={demo ? 1000 : 2000} value={text} onChange={(e) => setText(e.target.value)} disabled={!online} aria-label="Сообщение" />
+        <input className="input py-2" placeholder={online ? "Сообщение…" : "Нет соединения"} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)} disabled={!online} aria-label="Сообщение" />
         <button className="btn-primary px-3" disabled={!online || !text.trim()} aria-label="Отправить">
           ➤
         </button>
@@ -883,53 +748,14 @@ function Chat({ rt, myId, demo }: { rt: ReturnType<typeof useLessonRealtime>; my
 }
 
 /** «· осталось 55 минут» — до окончания урока по расписанию (опоздание урок не продлевает). Свой таймер, чтобы не перерисовывать класс. */
+/** Имя второго участника; у ознакомительного урока ученика может ещё не быть. */
+function otherParticipant(detail: LessonDetail) {
+  if (detail.myRole === "teacher") return detail.lesson.studentName || "ученик по приглашению";
+  return detail.lesson.teacherName;
+}
+
 function TimeLeft({ lesson }: { lesson: LessonDetail["lesson"] }) {
   const now = useNow(15000);
   const t = lessonTiming(lesson, now);
   return t ? <span data-testid="class-time-left"> · {t}</span> : null;
-}
-
-function mmss(ms: number) {
-  const total = Math.max(0, Math.ceil(ms / 1000));
-  const m = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${m}:${String(sec).padStart(2, "0")}`;
-}
-
-/** Остаток пробного урока по серверным часам (не по часам устройства). */
-function DemoTimer({ expiresAt }: { expiresAt: string }) {
-  const now = useNow(1000);
-  const left = Date.parse(expiresAt) - now;
-  const warn = left <= 2 * 60_000;
-  return (
-    <span
-      className={`chip shrink-0 py-1 font-mono tabular-nums ${warn ? "bg-red-100 text-red-800" : "bg-brand-50 text-brand-800"}`}
-      role="timer"
-      aria-label={`До конца демонстрации ${mmss(left)}`}
-      title="Демонстрация длится 15 минут по времени сервера"
-      data-testid="demo-time-left"
-    >
-      ⏱ {mmss(left)}
-    </span>
-  );
-}
-
-/** Предупреждение за 2 минуты до окончания пробного урока. */
-function DemoWarning({ expiresAt }: { expiresAt: string }) {
-  const now = useNow(5000);
-  const left = Date.parse(expiresAt) - now;
-  const warned = useRef(false);
-  const soon = left > 0 && left <= 2 * 60_000;
-  useEffect(() => {
-    if (soon && !warned.current) {
-      warned.current = true;
-      toast("Демонстрация скоро закончится — осталось меньше 2 минут");
-    }
-  }, [soon]);
-  if (!soon) return null;
-  return (
-    <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900" role="alert" data-testid="demo-warning">
-      Демонстрация закончится через {Math.max(1, Math.ceil(left / 60000))} мин. Материалы пробного урока временные и будут удалены.
-    </div>
-  );
 }

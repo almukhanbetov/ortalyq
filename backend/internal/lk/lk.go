@@ -52,19 +52,6 @@ func (c *Client) DeleteRoom(ctx context.Context, room string) error {
 	return err
 }
 
-// RoomNames — имена существующих комнат LiveKit.
-func (c *Client) RoomNames(ctx context.Context) ([]string, error) {
-	res, err := c.rooms.ListRooms(ctx, &livekit.ListRoomsRequest{})
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(res.Rooms))
-	for _, r := range res.Rooms {
-		names = append(names, r.Name)
-	}
-	return names, nil
-}
-
 type S3Target struct {
 	AccessKey, Secret, Endpoint, Bucket, Region string
 }

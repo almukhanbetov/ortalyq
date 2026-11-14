@@ -2,9 +2,12 @@ import { noteServerTime, SERVER_TIME_HEADER } from "./serverClock";
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Тело ответа с ошибкой (например, id идущего урока при конфликте) */
+  body?: Record<string, unknown>;
+  constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -23,7 +26,7 @@ async function parse<T>(res: Response): Promise<T> {
       (res.status === 502 || res.status === 504 || res.status === 500
         ? "Сервер недоступен или вернул ошибку. Попробуйте позже."
         : `Ошибка ${res.status}`);
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, data && typeof data === "object" ? (data as Record<string, unknown>) : undefined);
   }
   return data as T;
 }
@@ -127,6 +130,8 @@ export interface Lesson {
   hasTeacherPhoto: boolean;
   /** Демо-класс: вход открыт в любое время */
   alwaysOpen: boolean;
+  /** Бесплатный ознакомительный урок: идёт до завершения преподавателем; studentId пуст, пока ученик не присоединился */
+  isTrial: boolean;
 }
 
 export type RecordingStatus =
@@ -195,6 +200,8 @@ export interface LessonDetail {
   review: { rating: number; body: string; createdAt: string } | null;
   board: { revision: number; elementCount: number };
   chatCount: number;
+  /** Ссылка-приглашение ознакомительного урока (только преподавателю, пока ученик не присоединился) */
+  invite?: { path: string } | null;
 }
 
 export interface PublicConfig {
@@ -208,8 +215,6 @@ export interface PublicConfig {
   workshopAIConfigured?: boolean;
   /** Версия backend (для диагностики) */
   version?: string;
-  /** Пробный урок */
-  demo?: { enabled: boolean; minutes: number; codeRuns: number };
 }
 
 export interface ChatMessage {
@@ -264,10 +269,6 @@ export interface CodeLanguage {
 export interface CodeInfo {
   languages: CodeLanguage[];
   runnerConfigured: boolean;
-  /** Почему запуск недоступен (пробный урок) */
-  runnerProblem?: string;
-  /** Остаток запусков (только пробный урок) */
-  runsLeft?: number;
   lastRun: CodeRun | null;
   limits: { sourceBytes: number; stdinBytes: number; outputBytes: number; cpuSeconds: number; wallSeconds: number; memoryMb: number };
 }
@@ -363,42 +364,7 @@ export interface WorkshopState {
   analyses: WorkshopAnalysis[];
   homework: WorkshopHomework[];
   limits: { fragmentChars: number; homeworkTextChars: number };
-  /** Пробный урок: ИИ не вызывается, показывается пример результата */
-  demo?: boolean;
   /** Только у преподавателя */
   suggestedMode?: string;
   ai?: { configured: boolean; problem: string; noticeAccepted: boolean };
-}
-
-// ---- Пробный урок ----
-
-export type DemoRole = "teacher" | "student";
-
-export interface DemoFeatures {
-  video: boolean;
-  videoProblem: string;
-  codeRun: boolean;
-  codeRunLimit: number;
-  codeProblem: string;
-  aiLive: boolean;
-  aiProblem: string;
-  aiConfigured: boolean;
-  recording: boolean;
-  recordingNote: string;
-}
-
-export interface DemoState {
-  id: string;
-  mode: "solo" | "pair";
-  status: "active" | "ended";
-  closedReason: string;
-  endReason: "" | "expired" | "ended";
-  createdAt: string;
-  expiresAt: string;
-  durationMinutes: number;
-  me: { id: string; name: string; role: DemoRole };
-  participants: { role: DemoRole; name: string }[];
-  /** Только организатору совместной демонстрации, пока она идёт */
-  invite?: { accepted: boolean; path?: string };
-  features: DemoFeatures;
 }

@@ -205,7 +205,7 @@ cd /home/devops/ortalyq && git pull --ff-only origin main
    deploy/k8s/scripts/set-trusted-proxy.sh          # собственные проверочные запросы → один адрес → ConfigMap ortalyq-proxy → перезапуск backend → проверка
    deploy/k8s/scripts/set-trusted-proxy.sh --check  # проверить в любой момент; --restore — вернуть прежнее значение; --remove — удалить
    ```
-   - Нужен образ backend с поддержкой проверочного запроса (с выпуска «Пробный урок»). Запускайте после выката образов.
+   - Нужен образ backend с поддержкой проверочного запроса (с выпуска «Ознакомительный урок»). Запускайте после выката образов.
    - Без этого шага подменить адрес нельзя, но все посетители выглядят одним адресом Nginx и делят лимиты (например, 30 попыток входа за 10 минут на всех). В журнале бэкенда тогда есть `forwarded client address ignored ... peer=<адрес>`.
    - Доверяется ровно один адрес. Скрипт останавливается при неоднозначном результате и сам возвращает прежнее значение, если проверка после перезапуска не прошла. Адрес можно задать вручную: `set-trusted-proxy.sh 10.244.0.1` (только IP без маски). Бэкенд не запустится с `0.0.0.0/0`, `*` и сетями шире /8.
    - Повторите после пересоздания кластерной сети или смены CNI. Nginx менять не нужно: `X-Real-IP $remote_addr` и `X-Forwarded-For $proxy_add_x_forwarded_for` уже передают настоящий адрес клиента крайним справа, а подставленное клиентом слева бэкенд пропускает.
@@ -257,36 +257,35 @@ Actions → **Deploy** → Run workflow:
 
 **Перед выкатом с новыми миграциями** сделайте резервную копию: `deploy/k8s/scripts/backup-postgres.sh`.
 
-### Выпуск пробного урока (первый выкат с ним)
+### Выпуск ознакомительного урока (первый выкат с ним)
 
-Что меняется: миграция `0008_demo.sql` (новые таблицы `demo_rooms`, `demo_participants` — только добавление), ConfigMap `ortalyq-config` (`DEMO_*`), в Deployment backend — переменная `TRUSTED_PROXIES` из необязательного ConfigMap `ortalyq-proxy`. Сервисы, PV, Nginx и LiveKit не меняются, поэтому `render-upstreams.sh` не нужен (только если Service пересоздавали).
+Состояние VPS перед выпуском (проверено чтением): образы 35824b4, схема по `0007_diagnostic_review`; `apply.sh` уже применён с прежней конфигурацией (ConfigMap с неиспользуемыми теперь `DEMO_*`, переменная `TRUSTED_PROXIES` в backend).
 
-1. Дождитесь зелёных **CI** и **Images** для SHA выпуска. Выберите время без идущих занятий.
+Что меняется:
+- миграции `0008_demo.sql` (создаёт таблицы гостевой демонстрации) и `0009_trial_lesson.sql` (удаляет их; `lessons`: `is_trial`, необязательный `student_id` для ознакомительного урока, ограничения пересечений без ознакомительных уроков, уникальный индекс идущего ознакомительного урока). Данные уроков не меняются; старый образ работает с новой схемой;
+- ConfigMap `ortalyq-config` без `DEMO_*` (возвращается к прежнему составу). Без повторного `apply.sh` всё работает — лишние ключи просто не читаются, но кластер расходится с Git.
+
+1. Дождитесь зелёных **CI** и **Images** для SHA выпуска. Выберите время без занятий: `apply.sh` перезапустит backend и LiveKit (ConfigMap получает новое имя).
 2. На VPS под devops:
    ```bash
    cd /home/devops/ortalyq && git pull --ff-only origin main && git log -1 --format=%H   # = SHA выпуска
-   deploy/k8s/scripts/backup-postgres.sh      # перед миграцией
-   deploy/k8s/scripts/apply.sh                # ConfigMap DEMO_* и env TRUSTED_PROXIES; образы сохраняются
+   deploy/k8s/scripts/backup-postgres.sh      # перед миграциями 0008/0009
+   deploy/k8s/scripts/apply.sh                # ConfigMap без DEMO_*; образы сохраняются
    ```
-   ConfigMap получает новое имя (хэш), поэтому `apply.sh` перезапустит **backend и LiveKit** (backend — со старым образом, новые переменные он не читает). Идущие видеозвонки прервутся — выполняйте вне занятий. Frontend не перезапускается.
-3. Actions → **Deploy** → `sha` = SHA выпуска, `action` = `deploy` (Job миграций → backend → frontend → проверка `/api/ready`).
-4. Сразу после выката (до этого все посетители делят лимиты адреса Nginx):
-   ```bash
-   deploy/k8s/scripts/set-trusted-proxy.sh
-   ```
+3. Выкат образов с миграциями — `ortalyq-deploy deploy <sha> <digest backend> <digest frontend>` (через Actions → Deploy или вручную под devops так же, как для предыдущих выпусков: `ORTALYQ_KUBECONFIG`, `ORTALYQ_STATE_DIR`, digest — из GHCR по тегу SHA).
+4. Сразу после выката: `deploy/k8s/scripts/set-trusted-proxy.sh`, затем `--check`.
 5. Проверка:
    ```bash
    curl -fsS https://ortalyq.compserv.cloud/api/ready
-   curl -fsS https://ortalyq.compserv.cloud/api/config    # "version" = SHA выпуска, "demo":{"enabled":true,"minutes":15,...}
-   deploy/k8s/scripts/set-trusted-proxy.sh --check
+   curl -fsS https://ortalyq.compserv.cloud/api/config    # "version" = SHA выпуска
+   kubectl -n ortalyq exec statefulset/postgres -- psql -U ortalyq -d ortalyq -Atc "select max(version) from schema_migrations"   # 0009_trial_lesson
    kubectl -n ortalyq logs deploy/backend --since=10m | grep -E 'level=(ERROR|WARN)'
    ```
-   В браузере: `https://ortalyq.compserv.cloud/demo` → «Посмотреть самостоятельно» → «Продолжить без камеры и микрофона» → доска с примером, таймер; «Завершить демонстрацию» → экран «Демонстрация завершена». «Попробовать вдвоём» — ссылка открывается на втором устройстве, третий получает отказ. Обычный урок: вход в класс работает как раньше.
+   В браузере: преподаватель → «Начать ознакомительный урок» → ссылка-приглашение → ученик (другой браузер) входит и присоединяется → чат/доска → «Завершить занятие» → материалы на странице урока. Повторное нажатие показывает «Открыть идущий урок». Обычный урок открывается как раньше.
 6. Откат:
-   - образы: Actions → Deploy → `action` = `rollback` (или `deploy` с прошлым SHA). Таблицы демо остаются, старый образ их не использует;
+   - образы: `ortalyq-deploy rollback` (или `deploy` с прошлым SHA). Схема остаётся: старый образ её не трогает; ознакомительные уроки без ученика он не показывает;
    - доверенный прокси: `deploy/k8s/scripts/set-trusted-proxy.sh --restore` (или `--remove`);
-   - манифесты обычно откатывать не нужно (старый образ не читает `DEMO_*` и `TRUSTED_PROXIES`); при необходимости: `git checkout <прошлый SHA> -- deploy/k8s && deploy/k8s/scripts/apply.sh && git checkout HEAD -- deploy/k8s`;
-   - выключить только пробный урок без отката образов: коммит с `DEMO_ENABLED=false` в `deploy/k8s/base/kustomization.yaml` → на VPS `git pull --ff-only origin main && deploy/k8s/scripts/apply.sh`.
+   - манифесты при необходимости: `git checkout <прошлый SHA> -- deploy/k8s && deploy/k8s/scripts/apply.sh && git checkout HEAD -- deploy/k8s`.
 
 ### Изменение манифестов (ресурсы, ConfigMap, новые компоненты)
 

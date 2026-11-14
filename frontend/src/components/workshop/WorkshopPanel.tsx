@@ -15,24 +15,7 @@ import { WorkshopMaterials } from "./Materials";
 
 type Pending = { kind: "analysis"; action: string } | { kind: "homework" };
 
-export default function WorkshopPanel({
-  apiBase,
-  lessonId,
-  socket,
-  status,
-  seed,
-  sample,
-}: {
-  /** /api/lessons/<id> или /api/demo/rooms/<id> */
-  apiBase: string;
-  lessonId: string;
-  socket: LessonSocket | null;
-  status: SocketStatus;
-  /** Начальный учебный текст (пробный урок) */
-  seed?: (doc: Y.Doc) => void;
-  /** Заранее подготовленный пример разбора (пробный урок: ИИ не вызывается) */
-  sample?: React.ReactNode;
-}) {
+export default function WorkshopPanel({ lessonId, socket, status }: { lessonId: string; socket: LessonSocket | null; status: SocketStatus }) {
   const { tz } = useAuth();
   const [state, setState] = useState<WorkshopState | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -48,13 +31,13 @@ export default function WorkshopPanel({
   const ta = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(() => {
-    api<WorkshopState>(`${apiBase}/workshop`)
+    api<WorkshopState>(`/api/lessons/${lessonId}/workshop`)
       .then((s) => {
         setState(s);
         setLoadError("");
       })
       .catch((e) => setLoadError(errorMessage(e)));
-  }, [apiBase]);
+  }, [lessonId]);
 
   // Состояние перечитывается после (пере)подключения и по уведомлению «workshop.changed» (без содержимого:
   // что именно показать, сервер решает по роли при HTTP-запросе).
@@ -71,14 +54,14 @@ export default function WorkshopPanel({
 
   useEffect(() => {
     if (!socket) return;
-    const s = new YjsSync("workshop", socket, setSyncState, (m) => toast(`Изменение не сохранено: ${m}`, "err"), setLocked, seed);
+    const s = new YjsSync("workshop", socket, setSyncState, (m) => toast(`Изменение не сохранено: ${m}`, "err"), setLocked);
     s.start();
     setSync(s);
     return () => {
       s.stop();
       setSync(null);
     };
-  }, [socket, seed]);
+  }, [socket]);
 
   const ready = !!state;
   // Привязка textarea ↔ Y.Text: минимальная правка по общему префиксу/суффиксу, чужие правки сдвигают курсор.
@@ -150,7 +133,7 @@ export default function WorkshopPanel({
 
   const setMode = async (id: string) => {
     try {
-      await api(`${apiBase}/workshop/mode`, { method: "PUT", json: { mode: id } });
+      await api(`/api/lessons/${lessonId}/workshop/mode`, { method: "PUT", json: { mode: id } });
       setState((s) => (s ? { ...s, mode: id } : s));
     } catch (e) {
       toast(errorMessage(e), "err");
@@ -163,7 +146,7 @@ export default function WorkshopPanel({
     setAiError("");
     try {
       if (p.kind === "analysis") {
-        const r = await api<{ analysis: WorkshopAnalysis }>(`${apiBase}/workshop/analyses`, {
+        const r = await api<{ analysis: WorkshopAnalysis }>(`/api/lessons/${lessonId}/workshop/analyses`, {
           method: "POST",
           json: { action: p.action, level, fragment },
         });
@@ -171,7 +154,7 @@ export default function WorkshopPanel({
       } else {
         const full = ta.current?.value ?? "";
         const text = (fragment || full).trim();
-        const r = await api<{ homework: WorkshopHomework }>(`${apiBase}/workshop/homework`, { method: "POST", json: { text, level } });
+        const r = await api<{ homework: WorkshopHomework }>(`/api/lessons/${lessonId}/workshop/homework`, { method: "POST", json: { text, level } });
         setState((s) => (s ? { ...s, homework: [...s.homework, r.homework] } : s));
       }
     } catch (e) {
@@ -193,7 +176,7 @@ export default function WorkshopPanel({
     const p = notice;
     setNotice(null);
     try {
-      await api(`${apiBase}/workshop/ai-notice`, { method: "POST" });
+      await api(`/api/lessons/${lessonId}/workshop/ai-notice`, { method: "POST" });
       setState((s) => (s && s.ai ? { ...s, ai: { ...s.ai, noticeAccepted: true } } : s));
       if (p) perform(p);
     } catch (e) {
@@ -209,7 +192,7 @@ export default function WorkshopPanel({
     <div className="flex h-full flex-col bg-white" data-testid="workshop-panel">
       {/* Панель режима и сложности */}
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-2 py-1.5">
-        {teacher && state.editable && !state.demo ? (
+        {teacher && state.editable ? (
           <select className="input w-auto py-1 text-sm" value={state.mode} onChange={(e) => setMode(e.target.value)} aria-label="Режим мастерской" data-testid="workshop-mode">
             {state.modes.map((m) => (
               <option key={m.id} value={m.id}>
@@ -234,7 +217,7 @@ export default function WorkshopPanel({
           {readOnly ? "● только чтение" : syncState === "synced" ? "● синхронизировано" : syncState === "offline" ? "● нет связи — правки отправятся позже" : "● подключение…"}
         </span>
       </div>
-      {suggested && state.editable && !state.demo && (
+      {suggested && state.editable && (
         <div className="flex flex-wrap items-center gap-2 border-b border-line bg-brand-50 px-3 py-1.5 text-xs text-brand-900">
           Для этого предмета есть режим «{suggested.label}».
           <button className="btn-secondary btn-sm" onClick={() => setMode(suggested.id)}>
@@ -244,13 +227,12 @@ export default function WorkshopPanel({
       )}
       {!state.editable && (
         <div className="border-b border-line bg-amber-50 px-3 py-1.5 text-xs text-amber-900" role="status">
-          {state.closedReason || "Урок завершён"}.{" "}
-          {state.demo ? "Текст доступен только для чтения." : "Текст доступен только для чтения, опубликованные материалы — на странице урока."}
+          {state.closedReason || "Урок завершён"}. Текст доступен только для чтения, опубликованные материалы — на странице урока.
         </div>
       )}
       {teacher && state.editable && !state.ai?.configured && (
         <div className="border-b border-line bg-amber-50 px-3 py-1.5 text-xs text-amber-900" role="status" data-testid="workshop-ai-off">
-          {state.demo ? `Функции ИИ: ${state.ai?.problem}. Совместный текст работает.` : `Функции ИИ недоступны: ${state.ai?.problem}. Совместный текст и сохранённые материалы работают.`}
+          Функции ИИ недоступны: {state.ai?.problem}. Совместный текст и сохранённые материалы работают.
         </div>
       )}
 
@@ -310,8 +292,7 @@ export default function WorkshopPanel({
               <p className="text-[11px] text-muted">Исходный текст не меняется. Результаты сначала видны только вам — ученик увидит их после «Показать ученику» или «Опубликовать».</p>
             </div>
           )}
-          {sample && <div className="border-b border-line p-3">{sample}</div>}
-          <div className={`p-3 ${state.demo ? "hidden" : ""}`}>
+          <div className="p-3">
             <WorkshopMaterials
               lessonId={lessonId}
               state={state}

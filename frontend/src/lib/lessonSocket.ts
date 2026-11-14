@@ -15,8 +15,7 @@ export function wsBase(): string {
 }
 
 /** WebSocket занятия с автоматическим переподключением. После переподключения сервер
- *  присылает полный снимок (hello), поэтому состояние доски и чата восстанавливается.
- *  apiBase — адрес API класса: /api/lessons/<id> (урок) или /api/demo/rooms/<id> (пробный урок). */
+ *  присылает полный снимок (hello), поэтому состояние доски и чата восстанавливается. */
 export class LessonSocket {
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -26,11 +25,11 @@ export class LessonSocket {
   private timer: ReturnType<typeof setTimeout> | null = null;
   status: SocketStatus = "connecting";
 
-  constructor(private apiBase: string) {}
+  constructor(private lessonId: string) {}
 
   connect() {
     this.stopped = false;
-    const ws = new WebSocket(`${wsBase()}${this.apiBase}/ws`);
+    const ws = new WebSocket(`${wsBase()}/api/lessons/${this.lessonId}/ws`);
     this.ws = ws;
     ws.onopen = () => {
       this.attempt = 0;
@@ -100,7 +99,7 @@ export interface PresenceUser {
   role: "teacher" | "student";
 }
 
-export function useLessonRealtime(apiBase: string, enabled: boolean) {
+export function useLessonRealtime(lessonId: string, enabled: boolean) {
   const [socket, setSocket] = useState<LessonSocket | null>(null);
   const [status, setStatus] = useState<SocketStatus>("connecting");
   const [chat, setChat] = useState<ChatMessage[]>([]);
@@ -112,7 +111,7 @@ export function useLessonRealtime(apiBase: string, enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return;
-    const s = new LessonSocket(apiBase);
+    const s = new LessonSocket(lessonId);
     setSocket(s);
     const offStatus = s.onStatus(setStatus);
     const off = s.on((m) => {
@@ -150,7 +149,7 @@ export function useLessonRealtime(apiBase: string, enabled: boolean) {
       s.close();
       setSocket(null);
     };
-  }, [apiBase, enabled]);
+  }, [lessonId, enabled]);
 
   const counter = useRef(0);
   const sendChat = useCallback(

@@ -56,7 +56,7 @@ function LoginForm() {
         </form>
         <p className="mt-6 text-center text-sm text-muted">
           Нет аккаунта?{" "}
-          <Link href="/register" className="font-medium text-brand-700 hover:underline">
+          <Link href={params.get("next") ? `/register?next=${encodeURIComponent(params.get("next")!)}` : "/register"} className="font-medium text-brand-700 hover:underline">
             Зарегистрироваться
           </Link>
         </p>

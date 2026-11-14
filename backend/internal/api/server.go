@@ -36,7 +36,6 @@ type Server struct {
 	runs   *codeRuns
 	ai     workshop.Provider // nil, если ИИ мастерской не настроен
 	aiBusy *aiInFlight
-	demo   *demoMemory // пробный урок: содержимое временных комнат (только в памяти)
 }
 
 func New(cfg *config.Config, db *pgxpool.Pool, store *storage.Store, lkc *lk.Client) *Server {
@@ -44,7 +43,6 @@ func New(cfg *config.Config, db *pgxpool.Pool, store *storage.Store, lkc *lk.Cli
 	s.hub = realtime.NewHub(db)
 	s.runs = newCodeRuns(cfg.CodeRunMaxConcurrent)
 	s.aiBusy = &aiInFlight{busy: map[string]bool{}}
-	s.demo = newDemoMemory()
 	if cfg.AIProblem() == "" {
 		s.ai = &workshop.OpenAI{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Model: cfg.OpenAIModel,
 			ReasoningEffort: cfg.OpenAIReasoningEffort, MaxOutputTokens: cfg.OpenAIMaxOutputTokens,
@@ -111,18 +109,8 @@ func (s *Server) Router() *gin.Engine {
 	a.GET("/teachers/:id/slots", s.teacherSlots)
 	a.GET("/teachers/:id/photo", s.teacherPhoto)
 	a.GET("/listings", s.listListings)
-
-	// Пробный урок: без регистрации, доступ — по cookie участника своей демо-комнаты (см. demo.go)
-	a.POST("/demo/rooms", s.createDemo)
-	a.GET("/demo/rooms/:id", s.getDemo)
-	a.POST("/demo/rooms/:id/accept", s.acceptDemo)
-	a.POST("/demo/rooms/:id/join", s.joinDemo)
-	a.POST("/demo/rooms/:id/end", s.endDemoHandler)
-	a.GET("/demo/rooms/:id/ws", s.demoWS)
-	a.GET("/demo/rooms/:id/code", s.getDemoCode)
-	a.POST("/demo/rooms/:id/code/runs", s.createDemoCodeRun)
-	a.POST("/demo/rooms/:id/code/runs/:rid/cancel", s.cancelDemoCodeRun)
-	a.GET("/demo/rooms/:id/workshop", s.getDemoWorkshop)
+	// Приглашение на ознакомительный урок: сведения по коду из ссылки (вход не обязателен)
+	a.POST("/trial/:id/invite", s.trialInviteInfo)
 
 	// Временные ссылки на файлы (проверка подписи, без cookie)
 	a.GET("/files/:token", s.serveSignedFile)
@@ -148,6 +136,9 @@ func (s *Server) Router() *gin.Engine {
 	u.DELETE("/my/availability/:id", requireRole("teacher"), s.deleteAvailability)
 
 	u.POST("/lessons", requireRole("student"), s.bookLesson)
+	// Бесплатный ознакомительный урок (trial.go): начать без расписания, пригласить ученика ссылкой
+	u.POST("/lessons/trial", requireRole("teacher"), s.startTrialLesson)
+	u.POST("/trial/:id/accept", s.acceptTrialInvite)
 	u.GET("/lessons", s.myLessons)
 	u.GET("/my/students", requireRole("teacher"), s.myStudents)
 	u.GET("/my/homework", s.myHomework)
@@ -453,6 +444,5 @@ func (s *Server) publicConfig(c *gin.Context) {
 		"codeRunnerConfigured": s.runner != nil,
 		"workshopAIConfigured": s.ai != nil,
 		"version":              s.cfg.AppVersion,
-		"demo":                 gin.H{"enabled": s.cfg.DemoEnabled, "minutes": s.cfg.DemoMinutes, "codeRuns": s.cfg.DemoCodeRuns},
 	})
 }

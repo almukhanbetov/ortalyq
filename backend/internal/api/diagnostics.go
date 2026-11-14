@@ -62,6 +62,8 @@ func placementExplanation(l *lessonRow, now time.Time) string {
 		return "Урок отменён — он в «Истории»"
 	case l.Status == "completed":
 		return "Урок завершён — он в «Истории»"
+	case l.IsTrial:
+		return "Бесплатный ознакомительный урок идёт, пока преподаватель его не завершит — он в «Предстоящих»"
 	case l.AlwaysOpen:
 		return "Демо-класс, открыт всегда — он в «Предстоящих»"
 	case !now.Before(l.EndsAt):
@@ -142,6 +144,7 @@ type ownLessonCheck struct {
 	Status        string    `json:"status"`
 	CancelReason  string    `json:"cancelReason"`
 	AlwaysOpen    bool      `json:"alwaysOpen"`
+	IsTrial       bool      `json:"isTrial"`
 	List          string    `json:"list"` // upcoming | history
 	Explanation   string    `json:"explanation"`
 	CanEnter      bool      `json:"canEnter"`
@@ -205,7 +208,7 @@ func (s *Server) ownLessons(ctx context.Context, u *ctxUser, lessonID, teacherID
 		}
 		e := s.entryFor(l, now)
 		out = append(out, ownLessonCheck{ID: l.ID, Subject: l.Subject, MyRole: role, OtherName: other, StartsAt: l.StartsAt, EndsAt: l.EndsAt,
-			Status: l.Status, CancelReason: l.CancelReason, AlwaysOpen: l.AlwaysOpen, List: list, Explanation: placementExplanation(l, now),
+			Status: l.Status, CancelReason: l.CancelReason, AlwaysOpen: l.AlwaysOpen, IsTrial: l.IsTrial, List: list, Explanation: placementExplanation(l, now),
 			CanEnter: e.Allowed, EntryProblem: e.Problem, EntryOpensAt: e.OpensAt, EntryClosesAt: e.Closes})
 	}
 	// Предстоящие — первыми (ближайшие сначала), затем история (свежие сначала).
@@ -298,6 +301,7 @@ type lessonReport struct {
 	CancelledBy  *string             `json:"cancelledBy"`
 	IsDemo       bool                `json:"isDemo"`
 	AlwaysOpen   bool                `json:"alwaysOpen"`
+	IsTrial      bool                `json:"isTrial"`
 	StartsAtUTC  time.Time           `json:"startsAtUtc"`
 	EndsAtUTC    time.Time           `json:"endsAtUtc"`
 	StartedAt    *time.Time          `json:"startedAt"`
@@ -333,7 +337,7 @@ func (s *Server) DiagnoseLesson(ctx context.Context, q querier, id string, now t
 		return nil, err
 	}
 	r := &lessonReport{LessonID: l.ID, TeacherID: l.TeacherID, StudentID: l.StudentID, Subject: l.Subject, Status: l.Status, CancelReason: l.CancelReason,
-		IsDemo: l.IsDemo, AlwaysOpen: l.AlwaysOpen, StartsAtUTC: l.StartsAt.UTC(), EndsAtUTC: l.EndsAt.UTC(), StartedAt: l.StartedAt, EndedAt: l.EndedAt,
+		IsDemo: l.IsDemo, AlwaysOpen: l.AlwaysOpen, IsTrial: l.IsTrial, StartsAtUTC: l.StartsAt.UTC(), EndsAtUTC: l.EndsAt.UTC(), StartedAt: l.StartedAt, EndedAt: l.EndedAt,
 		Entry: s.entryFor(l, now), Findings: []finding{}, ServerTime: now.UTC()}
 	if err := q.QueryRow(ctx, `SELECT created_at, cancelled_by FROM lessons WHERE id=$1`, id).Scan(&r.CreatedAt, &r.CancelledBy); err != nil {
 		return nil, err
@@ -366,6 +370,9 @@ func (s *Server) DiagnoseLesson(ctx context.Context, q querier, id string, now t
 	placement := listPlacement{Upcoming: up, History: hist, Explanation: placementExplanation(l, now)}
 
 	for _, p := range []struct{ role, id string }{{"teacher", l.TeacherID}, {"student", l.StudentID}} {
+		if p.id == "" && l.IsTrial {
+			continue // ознакомительный урок: ученик ещё не присоединился по приглашению
+		}
 		pr := participantReport{Role: p.role, UserID: p.id, Lists: placement}
 		var email string
 		err := q.QueryRow(ctx, `SELECT name, email, role, blocked, timezone FROM users WHERE id=$1`, p.id).Scan(&pr.Name, &email, &pr.AccountRole, &pr.Blocked, &pr.Timezone)
@@ -399,9 +406,10 @@ func (s *Server) DiagnoseLesson(ctx context.Context, q querier, id string, now t
 		}
 	}
 
-	// Пересечения неотменённых уроков (их должны исключать ограничения БД).
-	if l.Status != "cancelled" {
-		ov, err := idsOf(ctx, q, `SELECT id FROM lessons WHERE id<>$1 AND status<>'cancelled' AND (teacher_id=$2 OR student_id=$3)
+	// Пересечения неотменённых уроков (их должны исключать ограничения БД). Ознакомительный урок интервалы
+	// расписания не занимает, поэтому пересечения и «дубли по времени» для него не проверяются.
+	if l.Status != "cancelled" && !l.IsTrial {
+		ov, err := idsOf(ctx, q, `SELECT id FROM lessons WHERE id<>$1 AND status<>'cancelled' AND NOT is_trial AND (teacher_id=$2 OR student_id=$3)
 			AND tstzrange(starts_at, ends_at) && tstzrange($4, $5) ORDER BY starts_at`, id, l.TeacherID, l.StudentID, l.StartsAt, l.EndsAt)
 		if err != nil {
 			return nil, err
@@ -412,13 +420,15 @@ func (s *Server) DiagnoseLesson(ctx context.Context, q querier, id string, now t
 		}
 	}
 	// Подозрительные дубли: та же пара и то же время начала.
-	dup, err := idsOf(ctx, q, `SELECT id FROM lessons WHERE id<>$1 AND teacher_id=$2 AND student_id=$3 AND starts_at=$4 ORDER BY created_at`, id, l.TeacherID, l.StudentID, l.StartsAt)
-	if err != nil {
-		return nil, err
-	}
-	if len(dup) > 0 {
-		add(finding{Code: "duplicate", Severity: "warning", Message: "Есть другие записи той же пары на то же время.",
-			Suggestion: "Сравните статусы дублей; лишнюю запись отменяет администратор вручную с подтверждением (история сохраняется).", RelatedIDs: dup})
+	if !l.IsTrial {
+		dup, err := idsOf(ctx, q, `SELECT id FROM lessons WHERE id<>$1 AND teacher_id=$2 AND student_id=$3 AND starts_at=$4 ORDER BY created_at`, id, l.TeacherID, l.StudentID, l.StartsAt)
+		if err != nil {
+			return nil, err
+		}
+		if len(dup) > 0 {
+			add(finding{Code: "duplicate", Severity: "warning", Message: "Есть другие записи той же пары на то же время.",
+				Suggestion: "Сравните статусы дублей; лишнюю запись отменяет администратор вручную с подтверждением (история сохраняется).", RelatedIDs: dup})
+		}
 	}
 	// Урок вне текущей доступности — допустимо: интервал могли изменить после записи, бронирование действует.
 	if !l.AlwaysOpen && l.Status != "cancelled" {
@@ -521,7 +531,7 @@ func (s *Server) adminDiagnoseLesson(c *gin.Context) {
 func PrintLessonReport(w io.Writer, r *lessonReport) {
 	p := func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
 	p("Занятие %s · %s", r.LessonID, r.Subject)
-	p("  статус: %s%s · демо: %v · всегда открыт: %v", r.Status, map[bool]string{true: " (" + r.CancelReason + ")", false: ""}[r.CancelReason != ""], r.IsDemo, r.AlwaysOpen)
+	p("  статус: %s%s · демо: %v · всегда открыт: %v · ознакомительный: %v", r.Status, map[bool]string{true: " (" + r.CancelReason + ")", false: ""}[r.CancelReason != ""], r.IsDemo, r.AlwaysOpen, r.IsTrial)
 	p("  время UTC: %s – %s", r.StartsAtUTC.Format("2006-01-02 15:04"), r.EndsAtUTC.Format("15:04"))
 	p("  создано: %s UTC · сервер сейчас: %s UTC", r.CreatedAt.UTC().Format("2006-01-02 15:04:05"), r.ServerTime.Format("2006-01-02 15:04:05"))
 	for _, x := range r.Participants {

@@ -96,11 +96,6 @@ func (h *Hub) persistDocs(r *room) {
 func (h *Hub) persistDoc(r *room, kind *docKind) {
 	r.mu.Lock()
 	d := r.doc(kind)
-	if r.ephemeral {
-		d.dirty = false // временная комната в БД не сохраняется
-		r.mu.Unlock()
-		return
-	}
 	if !d.dirty {
 		r.mu.Unlock()
 		return
@@ -182,9 +177,6 @@ func (h *Hub) docUpdate(r *room, kind *docKind, from *Client, update, cid string
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.released {
-		return
-	}
 	if kind.lockable && r.lockedFor(from, time.Now()) {
 		from.sendJSON(map[string]any{"type": kind.prefix + ".reject", "cid": cid, "locked": true, "message": "Урок завершён — совместное редактирование закрыто"})
 		return

@@ -24,6 +24,7 @@ export interface OwnLesson {
   endsAt: string;
   status: "scheduled" | "live";
   alwaysOpen: boolean;
+  isTrial?: boolean;
 }
 
 export interface SlotsDiagnosis {

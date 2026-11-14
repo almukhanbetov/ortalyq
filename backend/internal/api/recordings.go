@@ -378,9 +378,6 @@ func (s *Server) livekitWebhook(c *gin.Context) {
 	if ev.EgressInfo != nil {
 		s.applyEgressInfo(c, ev.EgressInfo)
 	}
-	if ev.Room != nil {
-		s.demoVideoWebhook(ev.Event, ev.Room.Name) // только комнаты «demo-…»; уроки не затрагиваются
-	}
 	c.JSON(200, gin.H{"ok": true})
 }
 
@@ -393,7 +390,7 @@ func (s *Server) recorderState(c *gin.Context) {
 	}
 	elements, rev := s.hub.BoardSnapshot(c, lessonID)
 	var subject, teacher, student string
-	s.db.QueryRow(c, `SELECT l.subject, t.name, st.name FROM lessons l JOIN users t ON t.id=l.teacher_id JOIN users st ON st.id=l.student_id WHERE l.id=$1`, lessonID).
+	s.db.QueryRow(c, `SELECT l.subject, t.name, coalesce(st.name, '') FROM lessons l JOIN users t ON t.id=l.teacher_id LEFT JOIN users st ON st.id=l.student_id WHERE l.id=$1`, lessonID).
 		Scan(&subject, &teacher, &student)
 	c.JSON(200, gin.H{"elements": json.RawMessage(elements), "revision": rev, "subject": subject, "teacherName": teacher, "studentName": student})
 }

@@ -282,8 +282,8 @@ func (s *Server) myHomework(c *gin.Context) {
 		c.JSON(200, gin.H{"homework": []any{}})
 		return
 	}
-	rows, err := s.db.Query(c, `SELECT h.id, h.title, h.due_at, h.created_at, l.id, l.subject, l.starts_at, t.name, st.name, sb.status
-		FROM homeworks h JOIN lessons l ON l.id = h.lesson_id JOIN users t ON t.id=l.teacher_id JOIN users st ON st.id=l.student_id
+	rows, err := s.db.Query(c, `SELECT h.id, h.title, h.due_at, h.created_at, l.id, l.subject, l.starts_at, t.name, coalesce(st.name, ''), sb.status
+		FROM homeworks h JOIN lessons l ON l.id = h.lesson_id JOIN users t ON t.id=l.teacher_id LEFT JOIN users st ON st.id=l.student_id
 		LEFT JOIN homework_submissions sb ON sb.homework_id = h.id
 		WHERE `+col+`=$1 ORDER BY (sb.status IS NULL) DESC, h.created_at DESC LIMIT 100`, u.ID)
 	if err != nil {
